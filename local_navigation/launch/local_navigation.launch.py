@@ -40,10 +40,7 @@ def generate_launch_description():
                                 # prefix=['xterm -e gdb -ex run  --args'],
                                 # prefix=['perf record --call-graph dwarf -o perf.data'],
                                 arguments=[],
-                                remappings=[
-                                  ('input_pc', '/robot/front_laser/points'),
-                                  ('input_path', '/path'),
-                                ])
+                                remappings=[])
 
     ld = LaunchDescription()
     ld.add_action(local_navigation_cmd)

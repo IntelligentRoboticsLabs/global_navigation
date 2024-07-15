@@ -20,6 +20,8 @@ find_package(grid_map_msgs REQUIRED)
 find_package(pcl_conversions REQUIRED)
 find_package(pcl_ros REQUIRED)
 find_package(nav_msgs REQUIRED)
+find_package(OpenCV REQUIRED)
+find_package(image_geometry REQUIRED)
 
 set(dependencies
   rclcpp
@@ -34,6 +36,8 @@ set(dependencies
   pcl_conversions
   pcl_ros
   nav_msgs
+  image_geometry
+  OpenCV
 )
 
 include_directories(

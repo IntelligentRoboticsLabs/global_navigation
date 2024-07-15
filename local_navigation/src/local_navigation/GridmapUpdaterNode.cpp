@@ -16,7 +16,6 @@
 
 #include "local_navigation/GridmapUpdaterNode.hpp"
 
-
 #include "tf2/LinearMath/Transform.h"
 #include "tf2/transform_datatypes.h"
 #include "tf2_ros/transform_listener.h"
@@ -46,14 +45,44 @@ GridmapUpdaterNode::GridmapUpdaterNode(const rclcpp::NodeOptions & options)
   tf_buffer_(this->get_clock()),
   tf_listener_(tf_buffer_)
 {
+
+  get_params();
+
   init_colors();
   init_gridmap();
 
   pc_sub_ = create_subscription<sensor_msgs::msg::PointCloud2>(
-    "input_pc", 10, std::bind(&GridmapUpdaterNode::pc_callback, this, _1));
+    lidar_topic_, 10, std::bind(&GridmapUpdaterNode::pc_callback, this, _1));
   path_sub_ = create_subscription<nav_msgs::msg::Path>(
-    "input_path", 10, std::bind(&GridmapUpdaterNode::path_callback, this, _1));
+    path_topic_, 10, std::bind(&GridmapUpdaterNode::path_callback, this, _1));
+  subscription_info_ = create_subscription<sensor_msgs::msg::CameraInfo>(
+      camera_info_topic_, 1,
+      std::bind(&GridmapUpdaterNode::topic_callback_info, this, _1));
+  subscription_img_ = create_subscription<sensor_msgs::msg::Image>(
+      camera_topic_, 1,
+      std::bind(&GridmapUpdaterNode::image_callback, this, _1));
   gridmap_pub_ = create_publisher<grid_map_msgs::msg::GridMap>("grid_map", 10);
+  img_pub_ = create_publisher<sensor_msgs::msg::Image>("img_proy_debug", 10);
+}
+
+void
+GridmapUpdaterNode::get_params()
+{
+  this->declare_parameter("camera_info_topic", "/camera/color/camera_info");
+  this->declare_parameter("camera_topic", "/camera/color/image_raw");
+  this->declare_parameter("lidar_topic", "/lidar_points");
+  this->declare_parameter("path_topic", "/path");
+  this->declare_parameter("map_frame", "map");
+  this->declare_parameter("robot_frame", "base_link");
+  this->declare_parameter("camera_frame", "camera_color_optical_frame");
+
+  camera_info_topic_ = this->get_parameter("camera_info_topic").as_string();
+  camera_topic_ = this->get_parameter("camera_topic").as_string();
+  lidar_topic_ = this->get_parameter("lidar_topic").as_string();
+  path_topic_ = this->get_parameter("path_topic").as_string();
+  map_frame_id_ = this->get_parameter("map_frame").as_string();
+  robot_frame_id_ = this->get_parameter("robot_frame").as_string();
+  camera_frame_id_  = this->get_parameter("camera_frame").as_string();
 }
 
 void
@@ -68,6 +97,7 @@ GridmapUpdaterNode::init_gridmap()
 
   // Adding layers
   gridmap_->add("elevation");
+  gridmap_->add("RGB"); 
   gridmap_->add("transversality");
 
   reset_gridmap();
@@ -91,12 +121,14 @@ GridmapUpdaterNode::reset_gridmap()
   // Use matrix to set the values.
   em_ = Eigen::MatrixXf(gridmap_->getSize()(0), gridmap_->getSize()(1));
   tm_ = Eigen::MatrixXf(gridmap_->getSize()(0), gridmap_->getSize()(1));
+  cm_ = Eigen::MatrixXf(gridmap_->getSize()(0), gridmap_->getSize()(1));
 
   // Set init values in matrixes
   for (auto i = 0; i < gridmap_->getSize()(0); i++) {
     for (auto j = 0; j < gridmap_->getSize()(1); j++) {
       em_(i, j) = NAN;
       tm_(i, j) = color_unknown_;
+      cm_(i, j) = 0;
     }
   }
 
@@ -106,6 +138,7 @@ GridmapUpdaterNode::reset_gridmap()
       grid_map::Index map_index(i, j);
       gridmap_->at("elevation", map_index) = em_(i, j);
       gridmap_->at("transversality", map_index) = tm_(i, j);
+      gridmap_->at("RGB", map_index) = cm_(i, j);
     }
   }
 }
@@ -113,11 +146,16 @@ GridmapUpdaterNode::reset_gridmap()
 void
 GridmapUpdaterNode::update_gridmap(
   const pcl::PointCloud<pcl::PointXYZ> & pc_map,
-  const pcl::PointCloud<pcl::PointXYZ> & pc_robot)
+  const pcl::PointCloud<pcl::PointXYZ> & pc_robot,
+  const pcl::PointCloud<pcl::PointXYZ> & pc_camera
+  )
 {
+
+  // RCLCPP_INFO(get_logger(), "Updating gridmap");
   for (size_t i = 0; i < pc_map.size(); i++) {
     const auto & point = pc_map[i];
     const auto & point_robot = pc_robot[i];
+    const auto & point_camera = pc_camera[i];
 
     if (std::isnan(point.x)) {continue;}
     if (std::isnan(point.y)) {continue;}
@@ -131,6 +169,13 @@ GridmapUpdaterNode::update_gridmap(
     if (std::isinf(point_robot.x)) {continue;}
     if (std::isinf(point_robot.y)) {continue;}
     if (std::isinf(point_robot.z)) {continue;}
+
+    if (std::isnan(point_camera.x)) {continue;}
+    if (std::isnan(point_camera.y)) {continue;}
+    if (std::isnan(point_camera.z)) {continue;}
+    if (std::isinf(point_camera.x)) {continue;}
+    if (std::isinf(point_camera.y)) {continue;}
+    if (std::isinf(point_camera.z)) {continue;}
 
     if (point_robot.x < robot_radious_max_x_ && point_robot.x > robot_radious_min_x_ &&
       abs(point_robot.y) < robot_radious_y_)
@@ -157,7 +202,31 @@ GridmapUpdaterNode::update_gridmap(
     }
 
     gridmap_->at("elevation", idx) = em_(idx(0), idx(1));
+
+
+
+    if (point_camera.z > 0) // Prevent to proyect points behind the camera 
+    {
+      auto [color, p_x, p_y] = get_point_color(point_camera);
+      if (color > 0)
+      {
+        cm_(idx(0), idx(1)) = color;
+        gridmap_->at("RGB", idx) = color;
+
+        // // Debug
+        // image_rgb_raw_.at<cv::Vec3b>(p_y, p_x) = color;
+      }
+    }
+    else
+    {
+      gridmap_->at("RGB", idx) = cm_(idx(0), idx(1));
+    }
   }
+  // // DEBUG Proyected points
+  // cv_bridge::CvImage cv_image;
+  // cv_image.image = image_rgb_raw_;
+  // cv_image.encoding = sensor_msgs::image_encodings::RGB8;
+  // img_pub_->publish(*cv_image.toImageMsg().get());
 }
 
 void
@@ -200,7 +269,7 @@ transform_cloud(
 void
 GridmapUpdaterNode::pc_callback(sensor_msgs::msg::PointCloud2::UniquePtr pc_in)
 {
-  RCLCPP_INFO(get_logger(), "PointCloud received");
+  // RCLCPP_INFO(get_logger(), "PointCloud received");
 
   pcl::PointCloud<pcl::PointXYZ>::Ptr pcl_cloud(new pcl::PointCloud<pcl::PointXYZ>);
   pcl::fromROSMsg(*pc_in, *pcl_cloud);
@@ -209,6 +278,8 @@ GridmapUpdaterNode::pc_callback(sensor_msgs::msg::PointCloud2::UniquePtr pc_in)
     *pcl_cloud, pc_in->header, map_frame_id_, tf_buffer_);
   auto [cloud_robot, error_robot] = transform_cloud(
     *pcl_cloud, pc_in->header, robot_frame_id_, tf_buffer_);
+  auto [cloud_camera, error_camera] = transform_cloud(
+    *pcl_cloud, pc_in->header, camera_frame_id_, tf_buffer_);
 
 
   if (cloud_map == nullptr) {
@@ -219,9 +290,13 @@ GridmapUpdaterNode::pc_callback(sensor_msgs::msg::PointCloud2::UniquePtr pc_in)
     RCLCPP_ERROR(get_logger(), "Error transforming pointcloud %s", error_robot.c_str());
     return;
   }
+  if (cloud_camera == nullptr) {
+    RCLCPP_ERROR(get_logger(), "Error transforming pointcloud %s", error_camera.c_str());
+    return;
+  }
 
   // reset_gridmap();
-  update_gridmap(*cloud_map, *cloud_robot);
+  update_gridmap(*cloud_map, *cloud_robot, *cloud_camera);
 
   publish_gridmap(pc_in->header.stamp);
 }
@@ -229,7 +304,7 @@ GridmapUpdaterNode::pc_callback(sensor_msgs::msg::PointCloud2::UniquePtr pc_in)
 void
 GridmapUpdaterNode::path_callback(nav_msgs::msg::Path::UniquePtr path_in)
 {
-  RCLCPP_INFO(get_logger(), "Path received");
+  // RCLCPP_INFO(get_logger(), "Path received");
   for (const auto & pose : path_in->poses) {
     grid_map::Position position(pose.pose.position.x, pose.pose.position.y);
 
@@ -245,6 +320,87 @@ GridmapUpdaterNode::path_callback(nav_msgs::msg::Path::UniquePtr path_in)
 
       gridmap_->at("transversality", idx) = tm_(idx(0), idx(1));
     }
+  }
+}
+
+void
+GridmapUpdaterNode::topic_callback_info(sensor_msgs::msg::CameraInfo::UniquePtr msg)
+{
+  // RCLCPP_INFO(get_logger(), "Camera info received");
+
+  camera_model_ = std::make_shared<image_geometry::PinholeCameraModel>();
+  camera_model_->fromCameraInfo(*msg);
+
+  subscription_info_ = nullptr;
+}
+
+void
+GridmapUpdaterNode::image_callback(sensor_msgs::msg::Image::UniquePtr msg)
+{
+  // RCLCPP_INFO(get_logger(), "Img received");
+
+  cv_bridge::CvImagePtr image_rgb_ptr;
+
+  try
+  {
+    if (msg->encoding == sensor_msgs::image_encodings::RGB8)
+    {
+      image_rgb_ptr = cv_bridge::toCvCopy(*msg, sensor_msgs::image_encodings::RGB8);
+    }
+    else if (msg->encoding == sensor_msgs::image_encodings::MONO8)
+    {
+    image_rgb_ptr = cv_bridge::toCvCopy(*msg, sensor_msgs::image_encodings::MONO8);
+    }
+    else
+    {
+      RCLCPP_ERROR(get_logger(), "Unsupported encoding %s", msg->encoding.c_str());
+      return;
+    }
+  }
+  catch (cv_bridge::Exception & e) 
+  {
+    RCLCPP_ERROR(get_logger(), "cv_bridge exception: %s", e.what());
+    return;
+  }
+  image_rgb_raw_ = image_rgb_ptr->image;
+}
+
+std::tuple<float, int, int>
+GridmapUpdaterNode::get_point_color(pcl::PointXYZ point)
+{
+  cv::Mat world_point_fromCamera = (cv::Mat_<double>(3, 1) << point.x, point.y, point.z);
+
+  cv::Mat intrinsic_matrix = cv::Mat(camera_model_->intrinsicMatrix());
+
+  cv::Point2d point_2d = camera_model_->project3dToPixel(cv::Point3d(point.x, point.y, point.z));
+
+  double point_x = point_2d.x;
+  double point_y = point_2d.y;
+
+  if (point_x > 0 && point_x < image_rgb_raw_.cols && point_y > 0 && point_y < image_rgb_raw_.rows) 
+  {
+    if (image_rgb_raw_.type() == CV_8UC3)
+    {
+      cv::Vec3b color = image_rgb_raw_.at<cv::Vec3b>(int(point_y), int(point_x));
+      Eigen::Vector3i color_eigen(color[2], color[1], color[0]);
+      float color_value;
+      grid_map::colorVectorToValue(color_eigen, color_value);
+      return {color_value, point_x, point_y};
+    }
+    else if (image_rgb_raw_.type() == CV_8UC1)
+    {
+      float color_value = image_rgb_raw_.at<uint8_t>(int(point_y), int(point_x));
+      return {color_value, point_x, point_y};
+    }
+    else
+    {
+      RCLCPP_ERROR(get_logger(), "Error: Image encoding not supported");
+      return {-1.0, -1.0, -1.0};
+    }
+  } 
+  else 
+  {
+    return {-1.0, -1.0, -1.0};
   }
 }
 

@@ -18,6 +18,8 @@
 #include <string>
 #include <memory>
 
+#include <tuple>
+
 #include "tf2_ros/buffer.h"
 #include "tf2_ros/transform_listener.h"
 #include "tf2_ros/transform_broadcaster.h"
@@ -31,6 +33,11 @@
 
 #include "nav_msgs/msg/path.hpp"
 #include "sensor_msgs/msg/point_cloud2.hpp"
+#include "sensor_msgs/msg/camera_info.hpp"
+#include "sensor_msgs/msg/image.hpp"
+#include "image_geometry/pinhole_camera_model.hpp"
+
+#include "opencv2/opencv.hpp"
 
 #include "rclcpp/rclcpp.hpp"
 
@@ -45,24 +52,39 @@ public:
   explicit GridmapUpdaterNode(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
 
 private:
+  void get_params();
   void init_gridmap();
   void reset_gridmap();
   void update_gridmap(
     const pcl::PointCloud<pcl::PointXYZ> & pc_map,
-    const pcl::PointCloud<pcl::PointXYZ> & pc_robot);
+    const pcl::PointCloud<pcl::PointXYZ> & pc_robot,
+    const pcl::PointCloud<pcl::PointXYZ> & pc_camera);
   void publish_gridmap(const builtin_interfaces::msg::Time & stamp);
 
   void init_colors();
 
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr pc_sub_;
   rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr path_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr subscription_info_;
+  rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr subscription_img_;
   rclcpp::Publisher<grid_map_msgs::msg::GridMap>::SharedPtr gridmap_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr img_pub_;
 
   void pc_callback(sensor_msgs::msg::PointCloud2::UniquePtr pc_in);
   void path_callback(nav_msgs::msg::Path::UniquePtr path_in);
+  void topic_callback_info(sensor_msgs::msg::CameraInfo::UniquePtr msg);
+  void image_callback(sensor_msgs::msg::Image::UniquePtr msg);
 
-  std::string map_frame_id_ {"map"};
-  std::string robot_frame_id_ {"robot_base_link"};
+  std::tuple<float, int, int> get_point_color(pcl::PointXYZ point);
+
+  std::string map_frame_id_;
+  std::string robot_frame_id_;
+  std::string camera_frame_id_;
+  std::string camera_info_topic_;
+  std::string camera_topic_;
+  std::string lidar_topic_;
+  std::string path_topic_;
+
   double resolution_gridmap_ {0.2};
   double size_x_ {100.0};
   double size_y_ {100.0};
@@ -76,9 +98,14 @@ private:
   std::shared_ptr<grid_map::GridMap> gridmap_;
   Eigen::MatrixXf em_;
   Eigen::MatrixXf tm_;
+  Eigen::MatrixXf cm_;
 
   tf2_ros::Buffer tf_buffer_;
   tf2_ros::TransformListener tf_listener_;
+
+  std::shared_ptr<image_geometry::PinholeCameraModel> camera_model_;
+
+  cv::Mat image_rgb_raw_;
 
   float color_unknown_;
   float color_free_;
