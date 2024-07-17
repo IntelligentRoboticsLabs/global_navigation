@@ -331,6 +331,8 @@ GridmapUpdaterNode::topic_callback_info(sensor_msgs::msg::CameraInfo::UniquePtr 
   camera_model_ = std::make_shared<image_geometry::PinholeCameraModel>();
   camera_model_->fromCameraInfo(*msg);
 
+  camera_info_received_ = true;
+
   subscription_info_ = nullptr;
 }
 
@@ -349,7 +351,11 @@ GridmapUpdaterNode::image_callback(sensor_msgs::msg::Image::UniquePtr msg)
     }
     else if (msg->encoding == sensor_msgs::image_encodings::MONO8)
     {
-    image_rgb_ptr = cv_bridge::toCvCopy(*msg, sensor_msgs::image_encodings::MONO8);
+      image_rgb_ptr = cv_bridge::toCvCopy(*msg, sensor_msgs::image_encodings::MONO8);
+    }
+    else if (msg->encoding == sensor_msgs::image_encodings::BGRA8)
+    {
+      image_rgb_ptr = cv_bridge::toCvCopy(*msg, sensor_msgs::image_encodings::BGRA8);
     }
     else
     {
@@ -368,6 +374,13 @@ GridmapUpdaterNode::image_callback(sensor_msgs::msg::Image::UniquePtr msg)
 std::tuple<float, int, int>
 GridmapUpdaterNode::get_point_color(pcl::PointXYZ point)
 {
+
+  if(!camera_info_received_)
+  {
+    RCLCPP_ERROR(get_logger(), "Error: Camera info not received");
+    return {-1.0, -1.0, -1.0};
+  }
+
   cv::Mat world_point_fromCamera = (cv::Mat_<double>(3, 1) << point.x, point.y, point.z);
 
   cv::Mat intrinsic_matrix = cv::Mat(camera_model_->intrinsicMatrix());
@@ -382,7 +395,7 @@ GridmapUpdaterNode::get_point_color(pcl::PointXYZ point)
     if (image_rgb_raw_.type() == CV_8UC3)
     {
       cv::Vec3b color = image_rgb_raw_.at<cv::Vec3b>(int(point_y), int(point_x));
-      Eigen::Vector3i color_eigen(color[2], color[1], color[0]);
+      Eigen::Vector3i color_eigen(color[0], color[1], color[2]);
       float color_value;
       grid_map::colorVectorToValue(color_eigen, color_value);
       return {color_value, point_x, point_y};
@@ -390,6 +403,14 @@ GridmapUpdaterNode::get_point_color(pcl::PointXYZ point)
     else if (image_rgb_raw_.type() == CV_8UC1)
     {
       float color_value = image_rgb_raw_.at<uint8_t>(int(point_y), int(point_x));
+      return {color_value, point_x, point_y};
+    }
+    else if (image_rgb_raw_.type() == CV_8UC4)
+    {
+      cv::Vec4b color = image_rgb_raw_.at<cv::Vec4b>(int(point_y), int(point_x));
+      Eigen::Vector3i color_eigen(color[2], color[1], color[0]);
+      float color_value;
+      grid_map::colorVectorToValue(color_eigen, color_value);
       return {color_value, point_x, point_y};
     }
     else
