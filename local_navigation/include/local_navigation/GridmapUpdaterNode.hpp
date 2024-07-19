@@ -88,8 +88,8 @@ private:
   bool camera_info_received_ {false};
 
   double resolution_gridmap_ {0.2};
-  double size_x_ {200.0};
-  double size_y_ {200.0};
+  double size_x_ {100.0};
+  double size_y_ {100.0};
   double infl_radious_x_ {10.0};
   double infl_radious_y_ {10.0};
   double robot_radious_min_x_ {-4.0};
