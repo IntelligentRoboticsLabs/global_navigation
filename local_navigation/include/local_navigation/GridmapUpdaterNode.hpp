@@ -75,8 +75,6 @@ private:
   void topic_callback_info(sensor_msgs::msg::CameraInfo::UniquePtr msg);
   void image_callback(sensor_msgs::msg::Image::UniquePtr msg);
 
-  std::tuple<float, int, int> get_point_color(pcl::PointXYZ point);
-
   std::string map_frame_id_;
   std::string robot_frame_id_;
   std::string camera_frame_id_;
@@ -84,8 +82,6 @@ private:
   std::string camera_topic_;
   std::string lidar_topic_;
   std::string path_topic_;
-
-  bool camera_info_received_ {false};
 
   double resolution_gridmap_ {0.2};
   double size_x_ {100.0};

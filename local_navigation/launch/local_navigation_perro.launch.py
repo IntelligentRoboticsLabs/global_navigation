@@ -38,8 +38,6 @@ def generate_launch_description():
             get_package_share_directory('go2_description'),
             'launch',
             'robot.launch.py')))
-    
-
 
     local_navigation_cmd = Node(package='local_navigation',
                                 executable='local_navigation_program',
