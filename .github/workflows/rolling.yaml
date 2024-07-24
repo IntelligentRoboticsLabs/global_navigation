@@ -22,6 +22,8 @@ jobs:
         uses: ros-tooling/setup-ros@0.7.5
         with:
           required-ros-distributions: rolling
+      - name: install pcl
+        run: sudo apt install libpcl-dev libpcl-*
       - name: build and test
         uses: ros-tooling/action-ros-ci@0.3.13
         with:
