@@ -25,13 +25,13 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
     pkg_dir = get_package_share_directory('local_navigation')
-    param_file = os.path.join(pkg_dir, 'config', 'params.yaml')
+    param_file = os.path.join(pkg_dir, 'config', 'params_summit.yaml')
 
     lidarslam_cmd = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(
             get_package_share_directory('lidarslam'),
             'launch',
-            'lidarslam.launch.py')))
+            'lidarslam_summit.launch.py')))
 
     local_navigation_cmd = Node(package='local_navigation',
                                 executable='local_navigation_program',

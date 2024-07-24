@@ -2,11 +2,8 @@ gridmap_updater_node:
   ros__parameters:
     use_sim_time: true
     camera_info_topic: /camera/color/camera_info
-    # camera_info_topic: /zed2/zed_node/rgb/camera_info
     camera_topic: /camera/color/image_raw
     # camera_topic: /camera/semseg/image
     map_frame: map
     robot_frame: base_link
-    # robot_frame: robot_base_link
     camera_frame: camera_color_optical_frame
-    # camera_frame: zed2_left_camera_optical_frame
