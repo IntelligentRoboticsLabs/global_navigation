@@ -7,6 +7,8 @@ gridmap_updater_node:
     map_frame: map
     robot_frame: base_link
     camera_frame: camera_color_optical_frame
+    size_x: 200.0
+    size_y: 200.0
 
 scan_matcher:
   ros__parameters:

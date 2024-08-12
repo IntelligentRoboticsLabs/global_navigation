@@ -492,6 +492,8 @@ GridmapUpdaterNode::update_gridmap_texture(
 void
 GridmapUpdaterNode::image_callback(sensor_msgs::msg::Image::UniquePtr msg)
 {
+  if (camera_model_ == nullptr) {return;}
+
   cv_bridge::CvImagePtr image_rgb_ptr;
 
   try {
