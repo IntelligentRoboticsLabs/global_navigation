@@ -17,27 +17,13 @@ import os
 from ament_index_python.packages import get_package_share_directory
 
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription
-from launch.launch_description_sources import PythonLaunchDescriptionSource
 
 from launch_ros.actions import Node
 
 
 def generate_launch_description():
     pkg_dir = get_package_share_directory('local_navigation')
-    param_file = os.path.join(pkg_dir, 'config', 'params_perro.yaml')
-
-    lidarslam_cmd = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(os.path.join(
-            get_package_share_directory('lidarslam'),
-            'launch',
-            'lidarslam_perro.launch.py')))
-
-    statictf_cmd = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(os.path.join(
-            get_package_share_directory('go2_description'),
-            'launch',
-            'robot.launch.py')))
+    param_file = os.path.join(pkg_dir, 'config', 'params_go2.yaml')
 
     local_navigation_cmd = Node(package='local_navigation',
                                 executable='local_navigation_program',
@@ -48,9 +34,27 @@ def generate_launch_description():
                                 arguments=[],
                                 remappings=[])
 
+    mapping = Node(
+        package='scanmatcher',
+        executable='scanmatcher_node',
+        parameters=[param_file],
+        remappings=[
+            ('/input_cloud', '/lidar_points'),
+            # ('/imu','/imu'),
+            ],
+        output='log'
+        )
+
+    graphbasedslam = Node(
+        package='graph_based_slam',
+        executable='graph_based_slam_node',
+        parameters=[param_file],
+        output='log'
+        )
+
     ld = LaunchDescription()
     ld.add_action(local_navigation_cmd)
-    ld.add_action(lidarslam_cmd)
-    ld.add_action(statictf_cmd)
+    ld.add_action(mapping)
+    ld.add_action(graphbasedslam)
 
     return ld

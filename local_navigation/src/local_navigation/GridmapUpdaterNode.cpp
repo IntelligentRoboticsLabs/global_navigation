@@ -42,7 +42,7 @@ using namespace std::chrono_literals;
 
 GridmapUpdaterNode::GridmapUpdaterNode(const rclcpp::NodeOptions & options)
 : Node("gridmap_updater_node", options),
-  tf_buffer_(this->get_clock()),
+  tf_buffer_(get_clock()),
   tf_listener_(tf_buffer_)
 {
   get_params();
@@ -51,7 +51,7 @@ GridmapUpdaterNode::GridmapUpdaterNode(const rclcpp::NodeOptions & options)
   init_gridmap();
 
   pc_sub_ = create_subscription<sensor_msgs::msg::PointCloud2>(
-    lidar_topic_, 10, std::bind(&GridmapUpdaterNode::pc_callback, this, _1));
+    lidar_topic_, 100, std::bind(&GridmapUpdaterNode::pc_callback, this, _1));
   path_sub_ = create_subscription<nav_msgs::msg::Path>(
     path_topic_, 10, std::bind(&GridmapUpdaterNode::path_callback, this, _1));
   subscription_info_ = create_subscription<sensor_msgs::msg::CameraInfo>(
@@ -61,27 +61,38 @@ GridmapUpdaterNode::GridmapUpdaterNode(const rclcpp::NodeOptions & options)
       camera_topic_, 1,
       std::bind(&GridmapUpdaterNode::image_callback, this, _1));
   gridmap_pub_ = create_publisher<grid_map_msgs::msg::GridMap>("grid_map", 10);
+  patch_pub_ = create_publisher<grid_map_msgs::msg::GridMap>("patch", 10);
   img_pub_ = create_publisher<sensor_msgs::msg::Image>("img_proy_debug", 10);
+
+  cycle_timer_ = create_wall_timer(1s, std::bind(&GridmapUpdaterNode::control_cycle, this));
 }
 
 void
 GridmapUpdaterNode::get_params()
 {
-  this->declare_parameter("camera_info_topic", "/camera/color/camera_info");
-  this->declare_parameter("camera_topic", "/camera/color/image_raw");
-  this->declare_parameter("lidar_topic", "/lidar_points");
-  this->declare_parameter("path_topic", "/path");
-  this->declare_parameter("map_frame", "map");
-  this->declare_parameter("robot_frame", "base_link");
-  this->declare_parameter("camera_frame", "camera_color_optical_frame");
+  declare_parameter("camera_info_topic", camera_info_topic_);
+  declare_parameter("camera_topic", camera_topic_);
+  declare_parameter("lidar_topic", lidar_topic_);
+  declare_parameter("path_topic", path_topic_);
+  declare_parameter("map_frame", map_frame_id_);
+  declare_parameter("robot_frame", robot_frame_id_);
+  declare_parameter("camera_frame", camera_frame_id_);
+  declare_parameter("size_x", size_x_);
+  declare_parameter("size_y", size_y_);
+  declare_parameter("patch_size", patch_size_);
+  declare_parameter("patch_distance", patch_distance_);
 
-  camera_info_topic_ = this->get_parameter("camera_info_topic").as_string();
-  camera_topic_ = this->get_parameter("camera_topic").as_string();
-  lidar_topic_ = this->get_parameter("lidar_topic").as_string();
-  path_topic_ = this->get_parameter("path_topic").as_string();
-  map_frame_id_ = this->get_parameter("map_frame").as_string();
-  robot_frame_id_ = this->get_parameter("robot_frame").as_string();
-  camera_frame_id_ = this->get_parameter("camera_frame").as_string();
+  get_parameter("camera_info_topic", camera_info_topic_);
+  get_parameter("camera_topic", camera_topic_);
+  get_parameter("lidar_topic", lidar_topic_);
+  get_parameter("path_topic", path_topic_);
+  get_parameter("map_frame", map_frame_id_);
+  get_parameter("robot_frame", robot_frame_id_);
+  get_parameter("camera_frame", camera_frame_id_);
+  get_parameter("size_x", size_x_);
+  get_parameter("size_y", size_y_);
+  get_parameter("patch_size", patch_size_);
+  get_parameter("patch_distance", patch_distance_);
 }
 
 void
@@ -181,7 +192,7 @@ get_point_color(
 }
 
 void
-GridmapUpdaterNode::update_gridmap(
+GridmapUpdaterNode::update_gridmap_elevation(
   const pcl::PointCloud<pcl::PointXYZ> & pc_map,
   const pcl::PointCloud<pcl::PointXYZ> & pc_robot,
   const pcl::PointCloud<pcl::PointXYZ> & pc_camera)
@@ -238,17 +249,17 @@ GridmapUpdaterNode::update_gridmap(
 
     gridmap_->at("elevation", idx) = em_(idx(0), idx(1));
 
-    if (camera_model_ != nullptr && !image_rgb_raw_.empty() &&
-      point_camera.z > 0)  // Prevent to proyect points behind the camera
-    {
-      auto [color, p_x, p_y] = get_point_color(point_camera, *camera_model_, image_rgb_raw_);
-      if (color > 0) {
-        cm_(idx(0), idx(1)) = color;
-        gridmap_->at("RGB", idx) = color;
-      }
-    } else {
-      gridmap_->at("RGB", idx) = cm_(idx(0), idx(1));
-    }
+    // if (camera_model_ != nullptr && !image_rgb_raw_.empty() &&
+    //   point_camera.z > 0)  // Prevent to proyect points behind the camera
+    // {
+    //   auto [color, p_x, p_y] = get_point_color(point_camera, *camera_model_, image_rgb_raw_);
+    //   if (color > 0) {
+    //     cm_(idx(0), idx(1)) = color;
+    //     gridmap_->at("RGB", idx) = color;
+    //   }
+    // } else {
+    //   // gridmap_->at("RGB", idx) = cm_(idx(0), idx(1));
+    // }
   }
 }
 
@@ -273,10 +284,10 @@ transform_cloud(
   std::string error;
 
   if (tf_buffer.canTransform(
-      map_frame, header.frame_id, tf2_ros::fromMsg(header.stamp), 1s, &error))
+      map_frame, header.frame_id, tf2::TimePointZero, 1s, &error))
   {
     auto sensor2wf_msg = tf_buffer.lookupTransform(
-      map_frame, header.frame_id, tf2_ros::fromMsg(header.stamp));
+      map_frame, header.frame_id, tf2::TimePointZero);
 
     tf2::fromMsg(sensor2wf_msg, sensor2wf);
 
@@ -285,6 +296,7 @@ transform_cloud(
 
     return {transformed_cloud, ""};
   } else {
+    std::cerr << "Error transforming point to " << map_frame << "[" << error << "]" << std::endl;
     return {nullptr, error};
   }
 }
@@ -292,6 +304,8 @@ transform_cloud(
 void
 GridmapUpdaterNode::pc_callback(sensor_msgs::msg::PointCloud2::UniquePtr pc_in)
 {
+  auto start = now();
+
   pcl::PointCloud<pcl::PointXYZ>::Ptr pcl_cloud(new pcl::PointCloud<pcl::PointXYZ>);
   pcl::fromROSMsg(*pc_in, *pcl_cloud);
 
@@ -302,6 +316,8 @@ GridmapUpdaterNode::pc_callback(sensor_msgs::msg::PointCloud2::UniquePtr pc_in)
   auto [cloud_camera, error_camera] = transform_cloud(
     *pcl_cloud, pc_in->header, camera_frame_id_, tf_buffer_);
 
+
+  auto ts_0 = now();
 
   if (cloud_map == nullptr) {
     RCLCPP_ERROR(get_logger(), "Error transforming pointcloud %s", error_map.c_str());
@@ -316,10 +332,18 @@ GridmapUpdaterNode::pc_callback(sensor_msgs::msg::PointCloud2::UniquePtr pc_in)
     return;
   }
 
+  auto ts_1 = now();
+
   // reset_gridmap();
-  update_gridmap(*cloud_map, *cloud_robot, *cloud_camera);
+  update_gridmap_elevation(*cloud_map, *cloud_robot, *cloud_camera);
+
+  auto ts_2 = now();
 
   publish_gridmap(pc_in->header.stamp);
+
+  RCLCPP_DEBUG(
+    get_logger(), "times: %f %f %f ",
+    (now() - ts_0).seconds(), (now() - ts_1).seconds(), (now() - ts_2).seconds());
 }
 
 void
@@ -353,6 +377,118 @@ GridmapUpdaterNode::topic_callback_info(sensor_msgs::msg::CameraInfo::UniquePtr 
   subscription_info_ = nullptr;
 }
 
+
+std::tuple<tf2::Stamped<tf2::Transform>, bool, std::string>
+GridmapUpdaterNode::get_frame_tf(
+  const std::string & frame, const builtin_interfaces::msg::Time & stamp)
+{
+  tf2::Stamped<tf2::Transform> map2frame;
+  std::string error;
+
+  if (tf_buffer_.canTransform(
+      map_frame_id_, frame, tf2::TimePointZero, 1s, &error))
+  {
+    auto map2frame_msgs = tf_buffer_.lookupTransform(
+      map_frame_id_, frame, tf2::TimePointZero);
+
+    tf2::fromMsg(map2frame_msgs, map2frame);
+
+    return {map2frame, true, ""};
+  } else {
+    return {map2frame, false, error};
+  }
+}
+
+float
+get_color_pixel(const cv::Mat & image, const float & x, const float & y)
+{
+  if (image.type() == CV_8UC3) {
+    cv::Vec3b color = image.at<cv::Vec3b>(static_cast<int>(x), static_cast<int>(y));
+    Eigen::Vector3i color_eigen(color[0], color[1], color[2]);
+    float color_value;
+    grid_map::colorVectorToValue(color_eigen, color_value);
+    return color_value;
+  } else if (image.type() == CV_8UC1) {
+    float color_value = image.at<uint8_t>(static_cast<int>(x), static_cast<int>(y));
+    return color_value;
+  } else if (image.type() == CV_8UC4) {
+    cv::Vec4b color = image.at<cv::Vec4b>(static_cast<int>(y), static_cast<int>(x));
+    Eigen::Vector3i color_eigen(color[2], color[1], color[0]);
+    float color_value;
+    grid_map::colorVectorToValue(color_eigen, color_value);
+    return color_value;
+  }
+}
+
+std::tuple<float, bool>
+GridmapUpdaterNode::get_color_in_gridmap(
+  const cv::Mat & image,
+  const image_geometry::PinholeCameraModel & camera_model,
+  const tf2::Stamped<tf2::Transform> & map2camera,
+  const tf2::Vector3 & gpoint)
+{
+  tf2::Vector3 cam_point = map2camera.inverse() * gpoint;
+
+  if (std::isnan(cam_point.x()) || cam_point.z() < 0) {
+    return {color_obstacle_, false};
+  }
+
+  cv::Point2d pixel_coords = camera_model.project3dToPixel(
+    cv::Point3d(cam_point.x(), cam_point.y(), cam_point.z()));
+
+  const float & x = pixel_coords.x;
+  const float & y = pixel_coords.y;
+  const int & width = image.cols;
+  const int & height = image.rows;
+
+  if (x < 0 || x >= width - 1 || y < 0 || y >= height - 1) {
+    return {color_obstacle_, false};
+  }
+
+  return {get_color_pixel(image, x, y), true};
+}
+
+
+void
+GridmapUpdaterNode::update_gridmap_texture(
+  const cv::Mat & image,
+  const image_geometry::PinholeCameraModel & camera_model,
+  builtin_interfaces::msg::Time stamp)
+{
+  auto [map2robot, success_r, error_r] = get_frame_tf(robot_frame_id_, stamp);
+  auto [map2camera, success_c, error_c] = get_frame_tf(camera_frame_id_, stamp);
+
+  if (!success_r) {
+    RCLCPP_ERROR(get_logger(), "update_gridmap_texture robot error: [%s]", error_r.c_str());
+    return;
+  }
+  if (!success_c) {
+    RCLCPP_ERROR(get_logger(), "update_gridmap_texture robot camera: [%s]", error_c.c_str());
+    return;
+  }
+
+  auto position = map2robot.getOrigin();
+
+  grid_map::Position center(position.x(), position.y());
+  double radius = 10.0;
+
+  for (grid_map::CircleIterator it(*gridmap_, center, radius); !it.isPastEnd(); ++it) {
+    grid_map::Position gpos;
+    gridmap_->getPosition(*it, gpos);
+    grid_map::Index idx;
+    gridmap_->getIndex(gpos, idx);
+
+    tf2::Vector3 gpoint(gpos.x(), gpos.y(), em_(idx(0), idx(1)));
+
+    auto [color, in_image] = get_color_in_gridmap(image, camera_model, map2camera, gpoint);
+
+    if (in_image) {
+      cm_(idx(0), idx(1)) = color;
+      gridmap_->at("RGB", idx) = cm_(idx(0), idx(1));
+    }
+  }
+}
+
 void
 GridmapUpdaterNode::image_callback(sensor_msgs::msg::Image::UniquePtr msg)
 {
@@ -374,7 +510,67 @@ GridmapUpdaterNode::image_callback(sensor_msgs::msg::Image::UniquePtr msg)
     return;
   }
 
-  image_rgb_raw_ = image_rgb_ptr->image;
+  update_gridmap_texture(image_rgb_ptr->image, *camera_model_, msg->header.stamp);
+  publish_gridmap(msg->header.stamp);
 }
+
+std::tuple<grid_map::GridMap, bool>
+GridmapUpdaterNode::create_patch_in_pos(const tf2::Stamped<tf2::Transform> & pos)
+{
+  bool success;
+  grid_map::Position center_pos(pos.getOrigin().x(), pos.getOrigin().y());
+  int size = patch_size_ / resolution_gridmap_;
+
+  grid_map::GridMap ret = gridmap_->getSubmap(center_pos, grid_map::Length(size, size), success);
+  ret.setFrameId(robot_frame_id_);
+
+  return {ret, success};
+}
+
+void
+GridmapUpdaterNode::publish_patch(const grid_map::GridMap & patch)
+{
+  std::unique_ptr<grid_map_msgs::msg::GridMap> msg;
+  msg = grid_map::GridMapRosConverter::toMessage(patch);
+  msg->header.frame_id = robot_frame_id_;
+  msg->header.stamp = now();
+
+  patch_pub_->publish(std::move(msg));
+}
+
+void
+GridmapUpdaterNode::control_cycle()
+{
+  tf2::Stamped<tf2::Transform> current_map2robot;
+  auto [map2robot0, success_r0, error_r0] = get_frame_tf(robot_frame_id_, now());
+
+  if (!started_odom_) {
+    if (success_r0) {
+      last_map2robot_ = map2robot0;
+      started_odom_ = true;
+    } else {
+      return;
+    }
+  }
+
+  auto [map2robot, success_r, error_r] = get_frame_tf(robot_frame_id_, now());
+
+  if (!success_r) {
+    RCLCPP_ERROR(get_logger(), "update_gridmap_texture robot error: [%s]", error_r.c_str());
+    return;
+  }
+
+  auto trans = last_map2robot_.inverse() * map2robot;
+
+  if (trans.getOrigin().length() > patch_distance_) {
+    auto [patch, success] = create_patch_in_pos(map2robot);
+    if (success) {
+      std::cerr << "Publishing" << std::endl;
+      publish_patch(patch);
+      last_map2robot_ = map2robot0;
+    }
+  }
+}
+
 
 }  // namespace local_navigation

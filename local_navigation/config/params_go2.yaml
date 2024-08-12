@@ -1,22 +1,20 @@
 gridmap_updater_node:
   ros__parameters:
-    use_sim_time: true
-    camera_info_topic: /zed2/zed_node/rgb/camera_info
-    camera_topic: /zed2/zed_node/rgb/image_rect_color
-    lidar_topic: /robot/front_laser/points
+    use_sim_time: True
+    camera_info_topic: /camera/color/camera_info
+    camera_topic: /camera/color/image_raw
+    lidar_topic: /pointcloud
     map_frame: map
-    robot_frame: robot_base_link
-    camera_frame: zed2_left_camera_optical_frame
-    size_x: 200.0
-    size_y: 200.0
+    robot_frame: base_link
+    camera_frame: camera_color_optical_frame
 
 scan_matcher:
   ros__parameters:
     use_sim_time: True
     global_frame_id: "map"
 
-    robot_frame_id: "robot_base_link"
-    odom_frame_id: "robot_odom"
+    robot_frame_id: "base_link"
+    odom_frame_id: "odom"
     registration_method: "NDT"
     ndt_resolution: 2.0
     ndt_num_threads: 2

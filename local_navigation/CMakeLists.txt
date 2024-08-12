@@ -59,13 +59,16 @@ add_executable(local_navigation_program
 ament_target_dependencies(local_navigation_program ${dependencies})
 target_link_libraries(local_navigation_program ${PROJECT_NAME})
 
+add_executable(summit_correct_zed_tf src/tools/summit_correct_zed_tf.cpp)
+ament_target_dependencies(summit_correct_zed_tf ${dependencies})
+
 install(TARGETS ${PROJECT_NAME}
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 
-install(TARGETS local_navigation_program
+install(TARGETS local_navigation_program summit_correct_zed_tf
   RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 

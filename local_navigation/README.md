@@ -7,7 +7,9 @@ This package contains our work about traversity
 1. In terminal 1 play a rosbag:
 
 ```
-ros2 bag play rosbags/trial_0 --clock -p
+ros2 bag play rosbags/summit/test_1_1 --clock -p --remap /tf_static:=/rosbag/tf_static /tf:=/rosbag/tf 
+ros2 run local_navigation summit_correct_zed_tf --ros-args -p use_sim_time:=True
+
 ```
 
 2. In terminal 2 launch the nodes:

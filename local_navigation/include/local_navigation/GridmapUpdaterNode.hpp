@@ -55,13 +55,31 @@ private:
   void get_params();
   void init_gridmap();
   void reset_gridmap();
-  void update_gridmap(
+  void update_gridmap_elevation(
     const pcl::PointCloud<pcl::PointXYZ> & pc_map,
     const pcl::PointCloud<pcl::PointXYZ> & pc_robot,
     const pcl::PointCloud<pcl::PointXYZ> & pc_camera);
+  void update_gridmap_texture(
+    const cv::Mat & image,
+    const image_geometry::PinholeCameraModel & camera_model,
+    builtin_interfaces::msg::Time stamp);
   void publish_gridmap(const builtin_interfaces::msg::Time & stamp);
-
   void init_colors();
+
+  std::tuple<tf2::Stamped<tf2::Transform>, bool, std::string>
+  get_frame_tf(const std::string & frame, const builtin_interfaces::msg::Time & stamp);
+
+  std::tuple<float, bool> get_color_in_gridmap(
+    const cv::Mat & image,
+    const image_geometry::PinholeCameraModel & camera_model,
+    const tf2::Stamped<tf2::Transform> & map2camera,
+    const tf2::Vector3 & gpoint);
+
+  void control_cycle();
+
+  std::tuple<grid_map::GridMap, bool>
+  create_patch_in_pos(const tf2::Stamped<tf2::Transform> & pos);
+  void publish_patch(const grid_map::GridMap & patch);
 
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr pc_sub_;
   rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr path_sub_;
@@ -69,29 +87,32 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr subscription_img_;
   rclcpp::Publisher<grid_map_msgs::msg::GridMap>::SharedPtr gridmap_pub_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr img_pub_;
+  rclcpp::Publisher<grid_map_msgs::msg::GridMap>::SharedPtr patch_pub_;
 
   void pc_callback(sensor_msgs::msg::PointCloud2::UniquePtr pc_in);
   void path_callback(nav_msgs::msg::Path::UniquePtr path_in);
   void topic_callback_info(sensor_msgs::msg::CameraInfo::UniquePtr msg);
   void image_callback(sensor_msgs::msg::Image::UniquePtr msg);
 
-  std::string map_frame_id_;
-  std::string robot_frame_id_;
-  std::string camera_frame_id_;
-  std::string camera_info_topic_;
-  std::string camera_topic_;
-  std::string lidar_topic_;
-  std::string path_topic_;
+  std::string map_frame_id_ {"map"};
+  std::string robot_frame_id_ {"base_link"};
+  std::string camera_frame_id_ {"camera_color_optical_frame"};
+  std::string camera_info_topic_ {"/camera/color/camera_info"};
+  std::string camera_topic_ {"/camera/color/image_raw"};
+  std::string lidar_topic_ {"/lidar_points"};
+  std::string path_topic_ {"/path"};
 
   double resolution_gridmap_ {0.2};
-  double size_x_ {100.0};
-  double size_y_ {100.0};
+  double size_x_ {200.0};
+  double size_y_ {200.0};
   double infl_radious_x_ {10.0};
   double infl_radious_y_ {10.0};
   double robot_radious_min_x_ {-4.0};
   double robot_radious_max_x_ {1.0};
   double robot_radious_y_ {1.0};
   double robot_radious_ {0.5};
+  double patch_size_ {1.0};
+  float patch_distance_ {1.0};
 
   std::shared_ptr<grid_map::GridMap> gridmap_;
   Eigen::MatrixXf em_;
@@ -103,11 +124,13 @@ private:
 
   std::shared_ptr<image_geometry::PinholeCameraModel> camera_model_;
 
-  cv::Mat image_rgb_raw_;
-
   float color_unknown_;
   float color_free_;
   float color_obstacle_;
+
+  rclcpp::TimerBase::SharedPtr cycle_timer_;
+  tf2::Stamped<tf2::Transform> last_map2robot_;
+  bool started_odom_ {false};
 };
 
 }  // namespace local_navigation
