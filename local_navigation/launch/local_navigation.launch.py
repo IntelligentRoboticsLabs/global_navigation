@@ -31,7 +31,13 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(os.path.join(
             get_package_share_directory('lidarslam'),
             'launch',
-            'lidarslam.launch.py')))
+            'lidarslam.launch.py')),
+        launch_arguments={
+            'main_param_dir': os.path.join(pkg_dir,
+                                           'config',
+                                           'lidarslam_summit.yaml')
+        }
+    )
 
     local_navigation_cmd = Node(package='local_navigation',
                                 executable='local_navigation_program',

@@ -1,9 +1,0 @@
-gridmap_updater_node:
-  ros__parameters:
-    use_sim_time: true
-    camera_info_topic: /camera/color/camera_info
-    camera_topic: /camera/color/image_raw
-    # camera_topic: /camera/semseg/image
-    map_frame: map
-    robot_frame: base_link
-    camera_frame: camera_color_optical_frame
