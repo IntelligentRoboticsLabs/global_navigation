@@ -1,32 +1,34 @@
-name: humble
+name: rolling
 
 on:
   pull_request:
     branches:
-      - humble
+      - rolling
   push:
     branches:
-      - humble
+      - rolling
       
 jobs:
   build-and-test:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-22.04]
+        os: [ubuntu-24.04]
       fail-fast: false
     steps:
       - name: Repo checkout
         uses: actions/checkout@v2
       - name: Setup ROS 2
-        uses: ros-tooling/setup-ros@0.7.1
+        uses: ros-tooling/setup-ros@0.7.5
         with:
-          required-ros-distributions: humble
+          required-ros-distributions: rolling
+      - name: install pcl
+        run: sudo apt install libpcl-dev libpcl-*
       - name: build and test
-        uses: ros-tooling/action-ros-ci@0.3.5
+        uses: ros-tooling/action-ros-ci@0.3.13
         with:
           package-name: local_navigation
-          target-ros2-distro: humble
+          target-ros2-distro: rolling
           vcs-repo-file-url: ${GITHUB_WORKSPACE}/dependencies.repos
       - name: Codecov
         uses: codecov/codecov-action@v1.2.1
