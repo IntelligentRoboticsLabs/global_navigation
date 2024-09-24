@@ -2,8 +2,8 @@ repositories:
   ThirdParty/grid_map:
     type: git
     url: https://github.com/ANYbotics/grid_map.git
-    version: humble
+    version: rolling
   ThirdParty/lidarslam_ros2:
     type: git
-    url: https://github.com/fmrico/lidarslam_ros2.git
-    version: summit-xl
+    url: https://github.com/rsasaki0109/lidarslam_ros2
+    version: develop
