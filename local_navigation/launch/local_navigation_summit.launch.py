@@ -37,8 +37,6 @@ def generate_launch_description():
                                 executable='local_navigation_program',
                                 output='screen',
                                 parameters=[param_file],
-                                # prefix=['xterm -e gdb -ex run  --args'],
-                                # prefix=['perf record --call-graph dwarf -o perf.data'],
                                 arguments=[],
                                 remappings=[])
 

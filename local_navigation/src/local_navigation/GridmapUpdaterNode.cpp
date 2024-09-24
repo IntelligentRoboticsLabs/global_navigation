@@ -326,9 +326,7 @@ GridmapUpdaterNode::pose_callback(geometry_msgs::msg::PoseStamped::UniquePtr pos
     const int i = iterator.getLinearIndex();
     data_rgb(i) = gridmap_->at("RGB", idx);
     data_elevation(i) = gridmap_->at("elevation", idx);
-      RCLCPP_INFO(get_logger(), "+Submap2 %d %d it: %d", idx(0), idx(1), i);
   }
-  RCLCPP_INFO(get_logger(), "+Submap");
 
   std::unique_ptr<grid_map_msgs::msg::GridMap> msg;
   msg = grid_map::GridMapRosConverter::toMessage(submap);
