@@ -5,5 +5,5 @@ repositories:
     version: rolling
   ThirdParty/lidarslam_ros2:
     type: git
-    url: https://github.com/rsasaki0109/lidarslam_ros2
-    version: develop
+    url: https://github.com/fmrico/lidarslam_ros2
+    version: summit-xl
