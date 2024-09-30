@@ -32,6 +32,7 @@
 #include "grid_map_ros/grid_map_ros.hpp"
 
 #include "nav_msgs/msg/path.hpp"
+#include "geometry_msgs/msg/pose_stamped.hpp"
 #include "sensor_msgs/msg/point_cloud2.hpp"
 #include "sensor_msgs/msg/camera_info.hpp"
 #include "sensor_msgs/msg/image.hpp"
@@ -65,15 +66,18 @@ private:
 
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr pc_sub_;
   rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr path_sub_;
+  rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr pose_sub_;
   rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr subscription_info_;
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr subscription_img_;
   rclcpp::Publisher<grid_map_msgs::msg::GridMap>::SharedPtr gridmap_pub_;
+  rclcpp::Publisher<grid_map_msgs::msg::GridMap>::SharedPtr subgridmap_pub_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr img_pub_;
 
   void pc_callback(sensor_msgs::msg::PointCloud2::UniquePtr pc_in);
   void path_callback(nav_msgs::msg::Path::UniquePtr path_in);
   void topic_callback_info(sensor_msgs::msg::CameraInfo::UniquePtr msg);
   void image_callback(sensor_msgs::msg::Image::UniquePtr msg);
+  void pose_callback(geometry_msgs::msg::PoseStamped::UniquePtr pose);
 
   std::string map_frame_id_;
   std::string robot_frame_id_;
@@ -82,6 +86,7 @@ private:
   std::string camera_topic_;
   std::string lidar_topic_;
   std::string path_topic_;
+  std::string pose_topic_;
 
   double resolution_gridmap_ {0.2};
   double size_x_ {100.0};
@@ -92,6 +97,7 @@ private:
   double robot_radious_max_x_ {1.0};
   double robot_radious_y_ {1.0};
   double robot_radious_ {0.5};
+  int subgridmap_size_ {16};
 
   std::shared_ptr<grid_map::GridMap> gridmap_;
   Eigen::MatrixXf em_;

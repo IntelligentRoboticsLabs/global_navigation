@@ -24,6 +24,8 @@ jobs:
           required-ros-distributions: rolling
       - name: install pcl
         run: sudo apt install libpcl-dev libpcl-*
+      - name: install g2o
+        run: sudo apt install libg2o-dev
       - name: build and test
         uses: ros-tooling/action-ros-ci@0.3.13
         with:

@@ -1,9 +1,13 @@
 repositories:
+  ThirdParty/lidarslam_ros2:
+    type: git
+    url: https://github.com/fmrico/lidarslam_ros2
+    version: summit-xl
+  ThirdParty/navigation2:
+    type: git
+    url: https://github.com/ros-navigation/navigation2
+    version: main
   ThirdParty/grid_map:
     type: git
     url: https://github.com/ANYbotics/grid_map.git
     version: rolling
-  ThirdParty/navigation2:
-    type: git
-    url: https://github.com/ros-navigation/navigation2.git
-    version: main

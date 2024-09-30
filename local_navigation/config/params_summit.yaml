@@ -3,7 +3,7 @@ gridmap_updater_node:
     use_sim_time: true
     camera_info_topic: /zed2/zed_node/rgb/camera_info
     camera_topic: /zed2/zed_node/rgb/image_rect_color
-    lidar_topic: /robot/front_laser/points
+    lidar_topic: /front_laser/points
     map_frame: map
-    robot_frame: robot_base_link
+    robot_frame: base_link
     camera_frame: zed2_left_camera_optical_frame
