@@ -1,3 +1,10 @@
+"""
+This module contains the launch description for the local navigation package.
+
+It includes the necessary nodes and configurations to run
+the local navigation demo.
+"""
+
 # Copyright 2024 Intelligent Robotics Lab
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,6 +19,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
 import os
 
 from ament_index_python.packages import get_package_share_directory
@@ -24,25 +32,41 @@ from launch_ros.actions import Node
 
 
 def generate_launch_description():
+    """
+    Generate the launch description for the local navigation package.
+
+    This function retrieves the package share directory and constructs the
+    path to the parameter configuration file for the local navigation demo.
+
+    :return: The launch description.
+    """
     pkg_dir = get_package_share_directory('local_navigation')
     param_file = os.path.join(pkg_dir, 'config', 'params_demo.yaml')
 
     lidarslam_cmd = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(os.path.join(
-            get_package_share_directory('local_navigation'),
-            'launch',
-            'lidarslam_summit.launch.py')))
+        PythonLaunchDescriptionSource(
+            os.path.join(
+                get_package_share_directory('local_navigation'),
+                'launch',
+                'lidarslam_summit.launch.py',
+            )
+        )
+    )
 
-    local_navigation_cmd = Node(package='local_navigation',
-                                executable='local_navigation_program',
-                                output='screen',
-                                parameters=[param_file],
-                                arguments=[],
-                                remappings=[])
-    
-    traversability_updater_cmd = Node(package='traversability_updater',
-                                        executable='traversability_updater_node',
-                                        output='screen')
+    local_navigation_cmd = Node(
+        package='local_navigation',
+        executable='local_navigation_program',
+        output='screen',
+        parameters=[param_file],
+        arguments=[],
+        remappings=[],
+    )
+
+    traversability_updater_cmd = Node(
+        package='traversability_updater',
+        executable='traversability_updater_node',
+        output='screen',
+    )
 
     ld = LaunchDescription()
     ld.add_action(local_navigation_cmd)

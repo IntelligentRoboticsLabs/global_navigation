@@ -299,25 +299,26 @@ GridmapUpdaterNode::pose_callback(geometry_msgs::msg::PoseStamped::UniquePtr pos
 {
   grid_map::GridMap submap;
 
-  grid_map::Position position(pose->pose.position.x + subgridmap_size_/2 * resolution_gridmap_, pose->pose.position.y + subgridmap_size_ * resolution_gridmap_/2);
+  grid_map::Position position(pose->pose.position.x + subgridmap_size_ / 2 * resolution_gridmap_,
+    pose->pose.position.y + subgridmap_size_ * resolution_gridmap_ / 2);
   grid_map::Index submapStartIndex;
   gridmap_->getIndex(position, submapStartIndex);
   grid_map::Index submapBufferSize(subgridmap_size_, subgridmap_size_);
 
   submap.setFrameId(robot_frame_id_);
-  submap.setGeometry(grid_map::Length(subgridmap_size_ * resolution_gridmap_, subgridmap_size_ * resolution_gridmap_), resolution_gridmap_);
+  submap.setGeometry(grid_map::Length(subgridmap_size_ * resolution_gridmap_,
+    subgridmap_size_ * resolution_gridmap_), resolution_gridmap_);
   submap.add("elevation");
   submap.add("RGB");
 
-  grid_map::Matrix& data_rgb = submap["RGB"];
-  grid_map::Matrix& data_elevation = submap["elevation"];
+  grid_map::Matrix & data_rgb = submap["RGB"];
+  grid_map::Matrix & data_elevation = submap["elevation"];
 
 
   grid_map::GridMapIterator iterator(submap);
   for (grid_map::SubmapIterator submap_iterator(*gridmap_, submapStartIndex, submapBufferSize);
-      !submap_iterator.isPastEnd() && !iterator.isPastEnd(); ++submap_iterator, ++iterator)
+    !submap_iterator.isPastEnd() && !iterator.isPastEnd(); ++submap_iterator, ++iterator)
   {
-
     grid_map::Position currentPositionInSubmap;
     gridmap_->getPosition(*submap_iterator, currentPositionInSubmap);
 
@@ -334,9 +335,7 @@ GridmapUpdaterNode::pose_callback(geometry_msgs::msg::PoseStamped::UniquePtr pos
   msg->header.stamp = pose->header.stamp;
 
   subgridmap_pub_->publish(std::move(msg));
-
 }
-
 
 
 void
