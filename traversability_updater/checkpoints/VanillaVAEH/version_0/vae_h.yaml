@@ -1,0 +1,30 @@
+model_params:
+  name: 'VanillaVAE'
+  in_channels: 1
+  latent_dim: 16
+  hidden_dims: [32, 64, 128]
+
+
+data_params:
+  data_path: "Data/Textures/dtd_all_expand_h/"
+  train_batch_size: 64
+  val_batch_size:  64
+  patch_size: 16
+  num_workers: 16
+
+
+exp_params:
+  LR: 0.001
+  weight_decay: 0.0000
+  scheduler_gamma: 0.95
+  kld_weight: 0.0001 #0.00020 # bajar a 10
+  manual_seed: 1265
+
+trainer_params:
+  gpus: [0]
+  max_epochs: 100
+
+logging_params:
+  save_dir: "logs/"
+  name: "VanillaVAEH"
+  

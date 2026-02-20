@@ -4,3 +4,5 @@ scipy==1.11.4
 opencv-python==4.10.0.82
 Pillow==10.2.0
 torchvision==0.18.0
+e2cnn==0.2.3
+pytorch-lightning==1.5.6

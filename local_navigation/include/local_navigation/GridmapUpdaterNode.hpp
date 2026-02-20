@@ -23,8 +23,8 @@
 #include "tf2_ros/buffer.h"
 #include "tf2_ros/transform_listener.h"
 #include "tf2_ros/transform_broadcaster.h"
-#include "tf2/LinearMath/Transform.h"
-#include "tf2/transform_datatypes.h"
+#include "tf2/LinearMath/Transform.hpp"
+#include "tf2/transform_datatypes.hpp"
 #include "pcl/point_cloud.h"
 #include "pcl/point_types.h"
 
@@ -87,12 +87,14 @@ private:
   std::string lidar_topic_;
   std::string path_topic_;
   std::string pose_topic_;
+  std::string gridmap_topic_;
+  std::string subgridmap_topic_;
 
   double resolution_gridmap_ {0.2};
   double size_x_ {100.0};
   double size_y_ {100.0};
-  double infl_radious_x_ {10.0};
-  double infl_radious_y_ {10.0};
+  double infl_radious_x_ {20.0};
+  double infl_radious_y_ {20.0};
   double robot_radious_min_x_ {-4.0};
   double robot_radious_max_x_ {1.0};
   double robot_radious_y_ {1.0};
@@ -114,6 +116,10 @@ private:
   float color_unknown_;
   float color_free_;
   float color_obstacle_;
+
+  bool only_positive_x_ {false};
+
+  bool bgr_mode_ {false};
 };
 
 }  // namespace local_navigation

@@ -1,0 +1,55 @@
+name: jazzy
+
+on:
+  pull_request:
+    branches:
+      - jazzy
+  push:
+    branches:
+      - jazzy
+
+jobs:
+  build_and_test:
+    runs-on: ubuntu-24.04
+    container:
+      image: ubuntu:noble
+    steps:
+      - name: Repo checkout
+        uses: actions/checkout@v4
+        with:
+          ref: jazzy
+      - name: Setup ROS 2
+        uses: ros-tooling/setup-ros@0.7.15
+        with:
+          required-ros-distributions: jazzy
+      - name: install pcl
+        run: sudo apt update && sudo apt install -y libpcl-dev
+      - name: install grid map
+        run: sudo apt install -y ros-jazzy-grid-map-ros
+      - name: install g2o
+        run: sudo apt install -y libg2o-dev
+      - name: build and test
+        uses: ros-tooling/action-ros-ci@0.4.5
+        with:
+          package-name: local_navigation
+          target-ros2-distro: jazzy
+          vcs-repo-file-url: ${GITHUB_WORKSPACE}/dependencies.repos
+          colcon-defaults: |
+            {
+              "build": {
+                "packages-up-to": true,
+                "mixin": ["coverage-gcc"]
+              },
+              "test": {
+                "parallel-workers" : 1
+              }
+            }
+          colcon-mixin-repository: https://raw.githubusercontent.com/colcon/colcon-mixin-repository/master/index.yaml
+
+      - name: Codecov
+        uses: codecov/codecov-action@v5.4.0
+        with:
+          files: ros_ws/lcov/total_coverage.info
+          flags: unittests
+          name: codecov-umbrella
+          fail_ci_if_error: false

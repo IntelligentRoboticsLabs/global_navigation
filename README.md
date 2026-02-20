@@ -1,4 +1,4 @@
-[![rolling](https://github.com/midemig/global_navigation/actions/workflows/rolling.yaml/badge.svg)](https://github.com/midemig/global_navigation/actions/workflows/rolling.yaml)
+[![jazzy](https://github.com/midemig/global_navigation/actions/workflows/jazzy.yaml/badge.svg)](https://github.com/midemig/global_navigation/actions/workflows/jazzy.yaml)
 
 # Global Navigation
 
@@ -23,16 +23,22 @@ To reproduce our results, follow these instructions:
 
 - Requirements
   - Ubuntu 24.04
-  - Ros2 Rolling
+  - Ros2 Jazzy
   - Python 3.12.3
 
+<!-- - Or use [distrobox](https://github.com/89luca89/distrobox)
+
+    ```sh
+    distrobox create --image ghcr.io/sloretz/ros:jazzy-desktop --name jazzy-desktop --home /path_to_container_home
+    distrobox enter jazzy-desktop
+    ``` -->
 
 - Create a workspace and clone the repository
 
     ```sh
     mkdir -p global_navigation_ws/src
     cd global_navigation_ws/src
-    git clone https://github.com/midemig/global_navigation -b rolling
+    git clone https://github.com/midemig/global_navigation -b jazzy
     ```
 
 - Install dependences and build workspace
@@ -43,6 +49,7 @@ To reproduce our results, follow these instructions:
     vcs import --recursive . < global_navigation/dependencies.repos
     cd ..
     rosdep install --from-paths src --ignore-src -r -y
+    source /opt/ros/jazzy/setup.bash
     colcon build --symlink-install 
     ```
 
@@ -57,7 +64,7 @@ To reproduce our results, follow these instructions:
 
 ### Launch Demo
 
-1. Download and unzip the [demo bagfile](https://urjc-my.sharepoint.com/:u:/g/personal/juancarlos_serrano_urjc_es/EQI9T9RNYuFJg6reV-pq-7IBjMEeEo7RxaJCudMs9IyRTg?e=hSNyQB).
+1. Download and unzip the [demo bagfile](https://urjc-my.sharepoint.com/:u:/g/personal/miguelangel_demiguel_urjc_es/IQCCUBCLxZOsQKuwxqeLw5i5ARZLa8Z3k4lTLb0z8eX362s?e=j1npwV).
 2. In a terminal, play the downloaded bag:
 
     ```sh
@@ -72,10 +79,29 @@ To reproduce our results, follow these instructions:
     ros2 launch local_navigation demo.launch.py
     ```
 
+## Citing This Work
+
+If you use this code in your research, please cite the corresponding paper:
+
+**BibTeX:**
+```bibtex
+@misc{dmiguel2025,
+  title={I Move Therefore I Learn: Experience-Based Traversability in Outdoor Robotics},
+  author={Miguel Ángel de Miguel, Jorge Beltrán, Juan S. Cely, Francisco Martín, Juan Carlos Manzanares, Alberto García},
+  year={2025},
+  eprint={2507.00882},
+  archivePrefix={arXiv},
+  primaryClass={cs.RO},
+  note={\url{https://doi.org/10.48550/arXiv.2507.00882}}
+}
+```
+    
+
 ## Authors
 
-- [Francisco Martín Rico](github.com/fmrico)
 - [Miguel Ángel de Miguel](github.com/midemig)
+- [Jorge Beltrán](github.com/beltransen)
 - [Juan Sebastián Cely](github.com/juanscelyg)
+- [Francisco Martín Rico](github.com/fmrico)
 - [Juan Carlos Manzanares](github.com/Juancams)
 - [Alberto García](github.com/aaggj)

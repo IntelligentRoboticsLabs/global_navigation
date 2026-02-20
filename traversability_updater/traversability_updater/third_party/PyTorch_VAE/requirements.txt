@@ -1,0 +1,6 @@
+pytorch-lightning>=2.3.0
+PyYAML==6.0
+tensorboard>=2.2.0
+torch>=2.2.2
+torchsummary==1.5.1
+torchvision>=0.17.2

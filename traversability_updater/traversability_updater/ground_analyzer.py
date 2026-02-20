@@ -17,24 +17,161 @@ Uses image and elevation features to analyze ground traversability.
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import ctypes
+import numpy as np
+
+import torch
+
+import torchvision.transforms as transforms
+
+import yaml
 
 from PIL import Image
 
-from ament_index_python.packages import get_package_share_directory
+from scipy import ndimage as ndi
+
+from sklearn.cluster import Birch
 
 import cv2 as cv
 
-from net import VAE
+from traversability_updater.third_party.PyTorch_VAE.experiment import VAEXperiment
 
-import numpy as np
+from traversability_updater.third_party.PyTorch_VAE.models import *
 
-from scipy import ndimage as ndi
+from ament_index_python.packages import get_package_share_directory
 
-import torch
-import torch.utils.data
 
-import torchvision.transforms as transforms
+def hval_to_vector(hval):
+    # Convert to 0-360 in radians
+    hval = np.deg2rad(hval * 2)
+    return [np.cos(hval), np.sin(hval)]
+
+
+def get_hsv_feat(img):
+    hsv = cv.cvtColor(img, cv.COLOR_BGR2HSV)
+    h_mean = hval_to_vector(np.mean(hsv[:, :, 0]))
+    h_std = hval_to_vector(np.std(hsv[:, :, 0]))
+    return [h_mean[0], h_mean[1], h_std[0], h_std[1], np.mean(hsv[:, :, 1]),
+            np.std(hsv[:, :, 1]), np.mean(hsv[:, :, 2]), np.std(hsv[:, :, 2])]
+
+
+def get_sobel_feat(img, wheigth=0.5):
+    sob = cv.Sobel(img, cv.CV_32F, 1, 0, ksize=3)
+    sob = (sob + 255) / 2
+    sob_std_1 = np.std(sob)
+    sob = cv.Sobel(img, cv.CV_32F, 0, 1, ksize=3)
+    sob = (sob + 255) / 2
+    sob_std_2 = np.std(sob)
+    return [np.clip((np.abs((max(sob_std_1, sob_std_2) + 1e-9) /
+            ((min(sob_std_1, sob_std_2)) + 1e-9)) - 1) * wheigth, 0, 1)]
+
+
+def get_img_feature_submap(image, max_unkown_, normalize=False):
+
+    if (np.sum(image == 0) >= max_unkown_):
+        return np.nan
+
+    image = np.copy(image).astype(np.uint8)
+
+    if (np.sum(image == 0) > 0) and (np.sum(image == 0) < max_unkown_):
+        cv.inpaint(image, (np.any(image == 0, axis=2)).astype(
+            np.uint8), 3, cv.INPAINT_NS, dst=image)
+
+    if normalize:
+        alpha = 255/(np.max(image) - np.min(image))
+        beta = -np.min(image)*alpha
+        image = cv.convertScaleAbs(
+            image, alpha=alpha, beta=beta).astype(np.float32)
+    image = image.astype(np.float32) / 255.0
+    return np.concatenate(
+        [get_sobel_feat(cv.cvtColor(image, cv.COLOR_RGB2GRAY)),
+            get_rgb_feat(image), get_hsv_feat(image)])
+
+
+def get_rgb_feat(img):
+    return [np.mean(img[:, :, 0]), np.std(img[:, :, 0]), np.mean(img[:, :, 1]),
+            np.std(img[:, :, 1]), np.mean(img[:, :, 2]), np.std(img[:, :, 2])]
+
+
+def is_feature_img_nav(feature, birch_model, threshold, weights=None,
+                       use_birch=True, centroids=None, logvar=None):
+    """
+    Calcula qué tan cerca está una feature del centroide del subcluster
+    asignado por Birch usando birch_model.predict().
+
+    Parámetros:
+    - feature: np.array de forma (32,) o (1, 32)
+    - birch_model: instancia entrenada de sklearn.cluster.Birch
+    - threshold: valor de distancia máxima esperada
+    - weights: np.array de pesos opcional de longitud 32
+
+    Retorna:
+    - puntuación entre 0 y 255 (mayor = más similar)
+    """
+    if use_birch:
+        # Asegurar forma correcta
+        if feature.ndim == 1:
+            feature = feature.reshape(1, -1)
+
+        # Aplicar pesos si se han proporcionado
+        if weights is not None:
+            feature_weighted = feature * weights
+            centers_weighted = birch_model.subcluster_centers_ * weights
+        else:
+            feature_weighted = feature
+            centers_weighted = birch_model.subcluster_centers_
+
+        # Obtener el índice del subcluster asignado
+        cluster_idx = birch_model.predict(feature)[0]
+        cluster_center = centers_weighted[cluster_idx]
+
+        # Calcular distancia euclídea al centro del subcluster asignado
+        dist = np.linalg.norm(cluster_center - feature_weighted)
+    else:
+        # Si no se usa Birch, calcular la distancia al centroide del subcluster
+        if logvar is not None:
+            var = np.exp(0.5*logvar)
+            diff = centroids - feature
+            # Avoid division by zero
+            var_safe = np.maximum(var, 1e-10)
+            # Calculate Mahalanobis distance
+            dist = np.sqrt(np.sum((diff ** 2) / var_safe, axis=1))
+            dist = np.min(dist)
+        else:
+            dist = np.linalg.norm(centroids - feature, axis=1)
+            dist = np.min(dist)
+
+    # Convertir distancia a puntuación en rango 0–255
+    return 255 - np.clip(dist * (255 / threshold), 0, 255)
+
+
+def is_feature_elev_nav(feature, features, threshold):
+    min_dist = np.inf
+    for feat in features:
+        dist = np.linalg.norm(feat - feature)
+        if dist < min_dist:
+            min_dist = dist
+    if min_dist == np.inf:
+        min_dist = 999
+    return 255 - np.clip(min_dist * (255/threshold), 0, 255)
+
+
+def get_heatgrid(score, size=16):
+    center = size // 2
+    x, y = np.meshgrid(np.arange(size), np.arange(size))
+    center_radius = 8
+    distance = np.clip(np.sqrt((x - center + 0.5)**2 + (y - center + 0.5)**2) -
+                       center_radius, 0, 12 - center_radius)
+    # distance = np.sqrt((x - center + 0.5)**2 + (y - center + 0.5)**2)
+    min_range = 0.5
+
+    # Normalize the distances to range between 1 and 0.5
+    max_distance = np.max(distance)
+    min_distance = np.min(distance)
+    normalized = 1 - (
+        (distance - min_distance) / (max_distance - min_distance)
+    ) * (1 - min_range)
+
+    return normalized * score
 
 
 class GroundAnalyzer():
@@ -77,7 +214,15 @@ class GroundAnalyzer():
         Variational Autoencoder model for feature extraction.
     """
 
-    def __init__(self, img_mode='HC'):
+    def __init__(
+            self,
+            img_mode='HC',
+            feat_min_dist=0.05,
+            version=0,
+            rgbh=False,
+            alpha=0.5,
+            use_birch=True
+    ):
         """Initialize the GroundAnalyzer with the specified image mode.
 
         Parameters
@@ -85,17 +230,21 @@ class GroundAnalyzer():
         img_mode : str, optional
             The mode of image analysis ('HC' or 'VAE'), by default 'HC'.
         """
-        self.zsize = 128
+        self.zsize = 64
+
+        self.rgbh = rgbh
 
         # Distance between features to be considered different
-        self.img_min_dist_ = 0.05
-        self.elev_min_dist_ = 0.05
+        self.img_min_dist_ = feat_min_dist
+        self.elev_min_dist_ = feat_min_dist
 
         # Step to move the submap (greater step faster, but less accuracy)
         self.recompute_step_ = 2
 
         self.elev_features_ = np.array([[0, 0, 0]])
-        self.max_unkown_ = 16
+        self.max_unkown_ = 32
+
+        self.weights = None
 
         self.features_filename_ = 'features.npy'
 
@@ -103,24 +252,80 @@ class GroundAnalyzer():
 
         self.submap_size_ = 16
 
-        self.resolution_ = 0.2
-        self.size_x_ = 500
-        self.size_y_ = 500
-
-        if self.img_model == 'HC':
-            self.features_ = np.empty((0, 15))
+        self.birch_model = Birch(n_clusters=None,
+                                 threshold=self.img_min_dist_,
+                                 branching_factor=50)
+        self.elev_birch_model = Birch(n_clusters=None,
+                                      threshold=self.elev_min_dist_,
+                                      branching_factor=50)
+        self.features_ = None
+        self.var_ = None
+        self.use_birch = use_birch
 
         if img_mode == 'VAE':
-            pkg_dir = get_package_share_directory('traversability_updater')
-            self.features_ = np.empty((0, self.zsize))
-            self.transform = transforms.Compose([transforms.Resize(
-                [self.submap_size_, self.submap_size_]), transforms.ToTensor()])
-            self.vae = VAE(zsize=self.zsize, layer_count=2, channels=4)
-            self.vae.load_state_dict(torch.load(
-                pkg_dir + '/traversability_updater/VAEmodel_h_16_128.pkl'))
-            self.vae.cuda()
-            self.vae.eval()
-            print('VAE loaded')
+            self.transform = transforms.Compose([
+                transforms.Resize(16),
+                transforms.ToTensor(),
+                transforms.GaussianBlur(3, sigma=(5.0, 5.0))
+            ])
+
+            pkg_folder = get_package_share_directory('traversability_updater')
+
+            if not self.rgbh:
+                # NO ROTATION MODEL LOAD
+                folder = pkg_folder + '/checkpoints/VanillaVAE/version_' + str(version) + '/'
+                config = yaml.safe_load(open(folder + 'vae_rgb.yaml'))
+                model = vae_models[config['model_params']['name']](**config['model_params'])
+                ckpt = torch.load(folder + 'last.ckpt')
+                print(ckpt['state_dict'].keys())
+                self.experiment = VAEXperiment(model, config['exp_params'])
+                self.experiment.load_state_dict(ckpt['state_dict'])
+                device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+                self.experiment.model.to(device)
+                self.experiment.model.eval()
+                print('VAE loaded')
+
+            else:
+                # ROTATION MODEL LOAD
+                folder = pkg_folder + '/checkpoints/VanillaVAERGBH/version_' + str(version) + '/'
+                config = yaml.safe_load(open(folder + 'vae_rgbh.yaml'))
+                model = vae_models[config['model_params']['name']](**config['model_params'])
+                ckpt = torch.load(folder + 'last.ckpt')
+                missing_keys, unexpected_keys = model.load_state_dict(ckpt['state_dict'], strict=False)
+                self.experiment = VAEXperiment(model, config['exp_params'])
+                device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+                self.experiment.model.to(device)
+                self.experiment.model.eval()
+                print('VAE loaded')
+
+            n_feats_rgb = 16
+            n_feats_h = 16
+            # Create weights based on alpha
+            w_rgb = 2 * alpha
+            w_h = 2 * (1 - alpha)
+            # Create the array with weights
+            weights = np.concatenate([
+                np.ones(n_feats_rgb) * w_rgb,  # RGB feature weights
+                np.ones(n_feats_h) * w_h       # Height feature weights
+            ])
+            self.weights = weights / weights.sum() * len(weights)
+
+            folder = pkg_folder + '/checkpoints/VanillaVAEH/version_' + str(0) + '/'
+            config = yaml.safe_load(open(folder + 'vae_h.yaml'))
+            model = vae_models[config['model_params']['name']](**config['model_params'])
+            ckpt = torch.load(folder + 'last.ckpt')
+            self.elev_experiment = VAEXperiment(model, config['exp_params'])
+            self.elev_experiment.load_state_dict(ckpt['state_dict'])
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            self.elev_experiment.model.to(device)
+            self.elev_experiment.model.eval()
+            print('VAE Elev loaded')
+
+    def my_adjust_contrast(self):
+        def _func(img):
+            return transforms.functional.adjust_contrast(img,
+                                                         contrast_factor=2.0)
+        return _func
 
     def load_features(self, filename=None):
         if filename is None:
@@ -128,49 +333,76 @@ class GroundAnalyzer():
         self.features_ = np.load(filename)
         print('Features loaded')
 
-    def insert_sample_elev(self, grid_map):
+    def insert_sample_elev(self, elev_map):
 
-        print('Inserting sample elev')
-        self.resolution_ = grid_map.info.resolution
-        elev_map = self.map_layer_to_numpy(grid_map, 'elevation')
+        # print('Inserting sample elev')
         feature = self.get_elev_features(elev_map)
         self.add_feature_elev(feature)
 
-    def insert_sample_img(self, grid_map):
+    def insert_sample_img(self, img_map, normalize=False):
 
-        print('Inserting sample')
-        self.resolution_ = grid_map.info.resolution
-        img_map = self.map_rgb_layer_to_numpy(grid_map, 'RGB')
-        feature = self.get_img_feature(img_map)
+        image = img_map[:self.submap_size_, :self.submap_size_, :]
+        # print('Inserting sample')
+        feature = get_img_feature_submap(image, self.max_unkown_, normalize)
         self.add_feature_img(np.expand_dims(feature, axis=0))
 
-    def insert_sample_vae(self, grid_map):
+    def insert_sample_img_elev(self, img_map, elev_map, normalize=False):
 
-        self.resolution_ = grid_map.info.resolution
-        img_map = self.map_rgb_layer_to_numpy(grid_map, 'RGB')
-        map_elev = self.map_rgb_layer_to_numpy(grid_map, 'elevation')
-        feature = self.get_vae_feature(img_map, map_elev)
-        self.add_feature_img(feature)
+        image = img_map[:self.submap_size_, :self.submap_size_, :]
+        feature_img = get_img_feature_submap(image, self.max_unkown_,
+                                             normalize)
+        feature_elev = self.get_elev_features(elev_map)
+        if np.isnan(feature_img).any() or np.isnan(feature_elev).any():
+            print('Feature is nan')
+            return
+        feature = np.concatenate((feature_img, feature_elev))
+        self.add_feature_img(np.expand_dims(feature, axis=0))
 
-    def recompute_transversality_img(self, msg, threshold=1.0):
+    def insert_sample(self, img_map, map_elev, normalize=False, n_samples=10):
+
+        map_elev = map_elev - np.nanmean(map_elev) + 255/2
+        if self.img_model == 'HC+':
+            self.insert_sample_img_elev(img_map, map_elev, normalize)
+        if self.img_model == 'HC':
+            self.insert_sample_img(img_map, normalize)
+            self.insert_sample_elev(map_elev)
+        if self.img_model == 'VAE':
+            self.insert_sample_vae(img_map, map_elev, normalize, n_samples)
+
+    def insert_sample_vae(self,
+                          img_map,
+                          map_elev,
+                          normalize=False,
+                          n_samples=10):
+
+        img = img_map[:self.submap_size_, :self.submap_size_, :]
+
+        feature, logvar = self.get_vae_feature_submap(img, map_elev, normalize)
+        var = np.exp(0.5*logvar)
+        self.add_feature_img(feature, var)
+
+        for i in range(n_samples):
+            feat = np.random.normal(feature, var)
+            self.add_feature_img(feat)
+
+    def recompute_transversality_img(self, img_map, threshold=1.0):
 
         print('Recomputing traversality')
-        layer_name = 'RGB'
-        layer_index = msg.layers.index(layer_name)
-        img_map = self.map_rgb_layer_to_numpy(
-            msg, layer_name).astype(np.uint32)
 
+        map_size = img_map.shape
+        
         nav_map = np.zeros(
-            (msg.data[layer_index].layout.dim[0].size,
-             msg.data[layer_index].layout.dim[1].size)).astype(np.float32)
+            (map_size[0], map_size[1])).astype(np.float32)
+        
+        if not hasattr(self.birch_model, 'subcluster_centers_'):
+            return nav_map
 
         for i in np.arange(0, img_map.shape[0] - self.submap_size_,
                            self.recompute_step_):
             for j in np.arange(0, img_map.shape[1] - self.submap_size_,
                                self.recompute_step_):
                 submap = np.copy(
-                    img_map[i:i+self.submap_size_, j:j+self.submap_size_])
-                submap = self.get_rgb_image(submap)
+                    img_map[i:i+self.submap_size_, j:j+self.submap_size_, :])
                 if np.sum(submap == 0) < self.max_unkown_:
                     if (np.sum(submap == 0) > 0):
                         cv.inpaint(
@@ -181,195 +413,282 @@ class GroundAnalyzer():
                             dst=submap
                         )
 
-                    # submap = submap.astype(np.float32) / 255.0
-                    img_features = self.get_img_feature_submap(submap)
+                    img_features = get_img_feature_submap(submap, self.max_unkown_, normalize=False)
 
                     if (np.sum(np.isnan(submap)) > 0):
                         print('Feature is navigable')
-                    # print('BBB', np.mean(submap), np.max(submap))
                     nav_map[i:i+self.submap_size_, j:j+self.submap_size_] += (
-                        (self.is_feature_img_nav(img_features, self.features_,
-                                                 threshold))
+                        (is_feature_img_nav(img_features, self.birch_model,
+                                                 threshold), self.weights, self.use_birch, self.features_)
                         * ((self.recompute_step_ / self.submap_size_) ** 2)
                     )
 
         return nav_map
 
-    def recompute_transversality_elev(self, msg, threshold=0.3):
+    def recompute_transversality_img_elev(self,
+                                          img_map,
+                                          elev_map,
+                                          threshold=1.0):
+
+        print('Recomputing traversality')
+
+        map_size = img_map.shape
+        
+        nav_map = np.zeros(
+            (map_size[0], map_size[1])).astype(np.float32)
+        
+        if not hasattr(self.birch_model, 'subcluster_centers_'):
+            return nav_map
+
+        for i in np.arange(0, img_map.shape[0] - self.submap_size_,
+                           self.recompute_step_):
+            for j in np.arange(0, img_map.shape[1] - self.submap_size_,
+                               self.recompute_step_):
+                submap = np.copy(
+                    img_map[i:i+self.submap_size_, j:j+self.submap_size_, :])
+                submap_elev = np.copy(
+                    elev_map[i:i+self.submap_size_, j:j+self.submap_size_])
+                if np.sum(submap == 0) < self.max_unkown_:
+                    if (np.sum(submap == 0) > 0):
+                        cv.inpaint(
+                            submap,
+                            (np.any(submap == 0, axis=2)).astype(np.uint8),
+                            3,
+                            cv.INPAINT_NS,
+                            dst=submap
+                        )
+
+                    feature_img = get_img_feature_submap(submap, self.max_unkown_, normalize=False)
+
+                    feature_elev = self.get_elev_features(submap_elev)
+
+                    if np.isnan(feature_img).any() or np.isnan(feature_elev).any():
+                        continue
+
+                    feature = np.concatenate((feature_img, feature_elev))
+
+                    nav_map[i:i+self.submap_size_, j:j+self.submap_size_] += (
+                        (is_feature_img_nav(feature, self.birch_model, threshold, self.weights, self.use_birch, self.features_))
+                        * ((self.recompute_step_ / self.submap_size_) ** 2)
+                    )
+
+        return nav_map
+    
+    def recompute_transversality(self,
+                                 img_map,
+                                 elev_map,
+                                 threshold=0.3,
+                                 alpha=0.5):
+
+        if self.img_model == 'HC+':
+            return self.recompute_transversality_img_elev(img_map, elev_map, threshold)
+        if self.img_model == 'HC':
+            img_trav = self.recompute_transversality_img(img_map, threshold)
+            elev_trav = self.recompute_transversality_elev(elev_map, threshold)
+            return (img_trav * alpha + elev_trav * (1 - alpha))
+        if self.img_model == 'VAE':
+            return self.recompute_transversality_vae(img_map, elev_map, threshold)
+    
+    def recompute_transversality_elev(self, elev_map, threshold=0.3):
 
         print('Recomputing Elev traversality')
-        layer_name = 'elevation'
-        layer_index = msg.layers.index(layer_name)
-        elev_map = self.map_layer_to_numpy(msg, 'elevation')
 
-        nav_map_elev = np.zeros((msg.data[layer_index].layout.dim[0].size,
-                                msg.data[layer_index].layout.dim[1].size)).astype(np.float32)
+        map_size = elev_map.shape
 
-        for i in np.arange(0, elev_map.shape[0] - self.submap_size_, self.recompute_step_*2):
-            for j in np.arange(0, elev_map.shape[1] - self.submap_size_, self.recompute_step_*2):
+        nav_map_elev = np.zeros(
+            (map_size[0], map_size[1])).astype(np.float32)
+        
+        if not hasattr(self.elev_birch_model, 'subcluster_centers_'):
+            return nav_map_elev
+
+        for i in np.arange(0, elev_map.shape[0] - self.submap_size_, self.recompute_step_):
+            for j in np.arange(0, elev_map.shape[1] - self.submap_size_, self.recompute_step_):
                 submap = np.copy(
                     elev_map[i:i+int(self.submap_size_/2), j:j+int(self.submap_size_/2)])
                 if np.sum(np.isnan(submap)) < self.max_unkown_/2:
 
                     elev_features = self.get_elev_features(submap)
-                    submap_print = np.nan_to_num(submap, nan=0)
-                    if (np.max(submap_print) > 10):
-                        print('Submap stats: ', np.mean(submap_print), np.max(
-                            submap_print), np.min(submap_print), submap_print.shape)
-                    nav_map_elev[i:i+int(self.submap_size_/2), j:j+int(self.submap_size_/2)] += ((self.is_feature_elev_nav(
-                        elev_features, self.elev_features_, threshold)))*((self.recompute_step_*2/self.submap_size_)**2)
+                    # submap_print = np.nan_to_num(submap, nan=0)
+                    # if (np.max(submap_print) > 10):
+                        # print('Submap stats: ', np.mean(submap_print), np.max(submap_print), np.min(submap_print), submap_print.shape)
+                    nav_map_elev[i:i+int(self.submap_size_/2), j:j+int(self.submap_size_/2)] += ((is_feature_elev_nav(
+                        elev_features, self.elev_birch_model.subcluster_centers_, threshold)))*((self.recompute_step_*2/self.submap_size_)**2)
 
         return nav_map_elev
 
-    def recompute_transversality_vae(self, msg, threshold=1.5):
+    def recompute_transversality_vae(self, map_rgb, map_elev, threshold=1.5):
+
+        mode = 'RGB'
+        n_channels = 3
+        if self.rgbh:
+            mode = 'RGBA'
+            n_channels = 4
 
         print('Recomputing traversality VAE')
-        layer_name = 'RGB'
-        layer_index = msg.layers.index(layer_name)
-        map_rgb = self.map_rgb_layer_to_numpy(
-            msg, layer_name).astype(np.uint32)
-        map_rgb = (self.get_rgb_image(map_rgb) * 255).astype(np.uint8)
-        layer_name = 'elevation'
-        layer_index = msg.layers.index(layer_name)
-        map_elev = self.map_layer_to_numpy(msg, layer_name).astype(np.uint32)
-        map_elev = np.clip(map_elev * 128 + 64, 0, 254).astype(np.uint8)
-        map = np.concatenate(
-            [map_rgb, np.expand_dims(map_elev, axis=2)], axis=2)
 
-        print('Map stats 1: ', np.mean(map[:, :, 0]), np.max(
-            map[:, :, 0]), np.min(map[:, :, 0]))
-        print('Map stats 1: ', np.mean(map[:, :, 1]), np.max(
-            map[:, :, 1]), np.min(map[:, :, 1]))
-        print('Map stats 1: ', np.mean(map[:, :, 2]), np.max(
-            map[:, :, 2]), np.min(map[:, :, 2]))
-        print('Map stats 1: ', np.mean(map[:, :, 3]), np.max(
-            map[:, :, 3]), np.min(map[:, :, 3]))
+        nav_map = np.zeros(
+            (map_rgb.shape[0], map_rgb.shape[1])).astype(np.float32)
+        
+        if not hasattr(self.birch_model, 'subcluster_centers_') and self.use_birch:
+            print('WARNING: No subcluster added')
+            return nav_map
+        if self.features_ is None and not self.use_birch:
+            print('WARNING: No subcluster added')
+            return nav_map
 
-        nav_map = np.zeros((msg.data[layer_index].layout.dim[0].size,
-                           msg.data[layer_index].layout.dim[1].size)).astype(np.float32)
+        # map_rgb = map_rgb.astype(np.float32) / 127.5 - 1
+        # map_elev = np.clip(map_elev - map_elev.mean(), -1, 1)
+        map = np.concatenate((map_rgb, np.expand_dims(map_elev, axis=-1)), axis=-1)
 
         img_tensor = img_tensor = torch.zeros(
-            0, 4, self.submap_size_, self.submap_size_)
+            0, n_channels, self.submap_size_, self.submap_size_)
         ij_array = []
+        submap_list = []  # List to store the submap tensors
+        elev_img_tensor = torch.zeros(0, 1, self.submap_size_, self.submap_size_)
+        elev_img_list = []  # List to store the submap tensors
+
         for i in np.arange(0, map.shape[0] - self.submap_size_, self.recompute_step_):
             for j in np.arange(0, map.shape[1] - self.submap_size_, self.recompute_step_):
                 submap = np.copy(
-                    map[i:i+self.submap_size_, j:j+self.submap_size_])
-                if np.sum(submap == 0) < self.max_unkown_:
+                    map[i:i+self.submap_size_, j:j+self.submap_size_, :n_channels]).astype(np.uint8)
+                submap_elev = np.copy(
+                    map_elev[i:i+self.submap_size_, j:j+self.submap_size_])
+                submap_elev = submap_elev - np.nanmean(submap_elev) + 255/2
+                submap_elev = np.nan_to_num(submap_elev, nan=0)[
+                    :self.submap_size_, :self.submap_size_]
+                if np.sum(np.all(submap == [0, 0, 0], axis=-1)) < self.max_unkown_:
+                    if np.sum(np.all(submap == [0, 0, 0], axis=-1)) > 0:
+                        cv.inpaint(
+                            submap,
+                            (np.any(submap == 0, axis=2)).astype(np.uint8),
+                            3,
+                            cv.INPAINT_NS,
+                            dst=submap
+                        )
+                    if (np.sum(submap_elev == 0) > 0):
+                        cv.inpaint(
+                            submap_elev,
+                            (submap_elev == 0).astype(np.uint8),
+                            3,
+                            cv.INPAINT_NS,
+                            dst=submap_elev
+                        )
+                    submap = Image.fromarray(submap.astype(np.uint8), mode=mode)
+                    submap_tensor = self.transform(submap).unsqueeze(0)
+                    submap_list.append(submap_tensor)
+                    submap_elev = Image.fromarray(submap_elev.astype(np.uint8), mode='L')
+                    submap_elev_tensor = self.transform(submap_elev).unsqueeze(0)
+                    elev_img_list.append(submap_elev_tensor)
 
-                    image = Image.fromarray(submap.astype('uint8'))
-                    image = self.transform(image)
-                    img_tensor = torch.cat(
-                        [img_tensor, image[None, :, :, :]], dim=0)
                     ij_array.append([i, j])
+
+        # if submap_list & elev_img_list:
+        img_tensor = torch.cat(submap_list, dim=0)
+        elev_img_tensor = torch.cat(elev_img_list, dim=0)
 
         print('map segmentes array completed ', len(ij_array))
 
-        feats_vae = self.vae.encode(img_tensor.cuda())
-        feats_vae = feats_vae[0].cpu().detach().numpy()
+        with torch.no_grad():
+            feats_vae, logvar_vae = self.experiment.model.encode(img_tensor.cuda())
+            feats_vae = feats_vae.cpu().detach().numpy()
+            logvar_vae = logvar_vae.cpu().detach().numpy()
 
-        # print('VAE features computed', feats_vae)
+        torch.cuda.empty_cache()
+
+        # VAE elev ---
+
+        # print('VAE elev img_tensor minmax', torch.min(elev_img_tensor), torch.max(elev_img_tensor))
+        with torch.no_grad():
+            feats_vae_elev, logvar_vae_elev = self.elev_experiment.model.encode(elev_img_tensor.cuda())
+            feats_vae_elev = feats_vae_elev.cpu().detach().numpy()
+            logvar_vae_elev = logvar_vae_elev.cpu().detach().numpy()
+
+        torch.cuda.empty_cache()
+
+        feats_vae = np.concatenate((feats_vae, feats_vae_elev), axis=-1)
+        logvar_vae = np.concatenate((logvar_vae, logvar_vae_elev), axis=-1)
 
         nav_map = np.zeros((map.shape[0], map.shape[1])).astype(np.float32)
         ij = 0
         for i, j in ij_array:
-            nav_map[i:i+self.submap_size_, j:j+self.submap_size_] += ((self.is_feature_img_nav(
-                feats_vae[ij, :], self.features_, threshold)))*((self.recompute_step_/self.submap_size_)**2)
+            
+            score = is_feature_img_nav(
+                feats_vae[ij, :],
+                self.birch_model,
+                threshold,
+                weights=self.weights,
+                use_birch=self.use_birch,
+                centroids=self.features_,
+                # logvar = logvar_vae[ij, :],
+                logvar = None,
+                )
+
+            nav_map[i:i+self.submap_size_, j:j+self.submap_size_] = np.maximum(
+                nav_map[i:i+self.submap_size_, j:j+self.submap_size_],
+                get_heatgrid(score))
+            
             ij += 1
+        print('Recomputing traversality VAE Finished')
         return nav_map
-
-    def get_rgb_image(self, submap):
-        # Get 3 dims RGB image from submap
-        return np.stack(((submap & 255), ((submap >> 8) & 255), (submap >> 16) & 255), axis=-1).astype(np.uint8)
-
-    def get_sobel_feat(self, img, wheigth=0.5):
-        sob = cv.Sobel(img, cv.CV_32F, 1, 0, ksize=3)
-        sob = (sob + 255) / 2
-        sob_std_1 = np.std(sob)
-        sob = cv.Sobel(img, cv.CV_32F, 0, 1, ksize=3)
-        sob = (sob + 255) / 2
-        sob_std_2 = np.std(sob)
-        return [np.clip((np.abs((max(sob_std_1, sob_std_2) + 1e-9)/((min(sob_std_1, sob_std_2)) + 1e-9)) - 1) * wheigth, 0, 1)]
-
-    def get_rgb_feat(self, img):
-        return [np.mean(img[:, :, 0]), np.std(img[:, :, 0]), np.mean(img[:, :, 1]), np.std(img[:, :, 1]), np.mean(img[:, :, 2]), np.std(img[:, :, 2])]
-
-    def hval_to_vector(self, hval):
-        # Convert to 0-360 in radians
-        hval = np.deg2rad(hval * 2)
-        return [np.cos(hval), np.sin(hval)]
-
-    def get_hsv_feat(self, img):
-        hsv = cv.cvtColor(img, cv.COLOR_BGR2HSV)
-        h_mean = self.hval_to_vector(np.mean(hsv[:, :, 0]))
-        h_std = self.hval_to_vector(np.std(hsv[:, :, 0]))
-        return [h_mean[0], h_mean[1], h_std[0], h_std[1], np.mean(hsv[:, :, 1]), np.std(hsv[:, :, 1]), np.mean(hsv[:, :, 2]), np.std(hsv[:, :, 2])]
-
-    def get_img_feature(self, submap, normalize=False):
-        image = self.get_rgb_image(
-            submap)[:self.submap_size_, :self.submap_size_, :]
-
-        return self.get_img_feature_submap(image, normalize)
-
-    def get_img_feature_submap(self, image, normalize=False):
-
-        if (np.sum(image == 0) >= self.max_unkown_):
-            return np.nan
-
-        if (np.sum(image == 0) > 0) and (np.sum(image == 0) < self.max_unkown_):
-            cv.inpaint(image, (np.any(image == 0, axis=2)).astype(
-                np.uint8), 3, cv.INPAINT_NS, dst=image)
-
-        if normalize:
-            alpha = 255/(np.max(image) - np.min(image))
-            beta = -np.min(image)*alpha
-            image = cv.convertScaleAbs(
-                image, alpha=alpha, beta=beta).astype(np.float32)
-        image = image.astype(np.float32) / 255.0
-        return np.concatenate(
-            [self.get_sobel_feat(cv.cvtColor(image, cv.COLOR_RGB2GRAY)),
-             self.get_rgb_feat(image), self.get_hsv_feat(image)])
-
-    def get_vae_feature(self, submap, submap_elev, normalize=False):
-
-        image = self.get_rgb_image(
-            submap)[:self.submap_size_, :self.submap_size_, :]
-
-        return self.get_vae_feature_submap(image, submap_elev, normalize)
+    
 
     def get_vae_feature_submap(self, img, submap_elev, normalize=False):
 
-        if (np.sum(img == 0) >= self.max_unkown_):
-            return np.nan
+        mode = 'RGB'
+        n_channels = 3
 
-        if ((np.sum(img == 0) > 0) and (np.sum(img == 0) < self.max_unkown_)):
+        img = np.copy(img).astype(np.uint8)
+
+        if (np.sum(np.sum(img, axis=2) == 0) >= self.max_unkown_):
+            return np.nan, np.nan
+
+        if ((np.sum(np.sum(img, axis=2) == 0) > 0) and (np.sum(np.sum(img, axis=2) == 0) < self.max_unkown_)):
             cv.inpaint(img, (np.any(img == 0, axis=2)).astype(
                 np.uint8), 3, cv.INPAINT_NS, dst=img)
+            
 
         # Temporal, should be inpainted
         submap_elev = np.nan_to_num(submap_elev, nan=0)[
             :self.submap_size_, :self.submap_size_]
+        if ((np.sum(submap_elev == 0) > 0) and (np.sum(submap_elev == 0) < self.max_unkown_)):
+            cv.inpaint(submap_elev, (submap_elev == 0).astype(
+                np.uint8), 3, cv.INPAINT_NS, dst=submap_elev)
+            
+        submap_elev = np.clip(submap_elev, 0, 255).astype(np.uint8)
+        img = img.astype(np.uint8)
 
-        img = (img * 255).astype(np.uint8)
-        submap_elev = np.clip(submap_elev * 128 + 64, 0, 254).astype(np.uint8)
-        img = np.append(img, np.expand_dims(submap_elev, axis=2), axis=2)
+        if self.rgbh:
+            if len(submap_elev.shape) < 3:
+                submap_elev = np.expand_dims(submap_elev, axis=-1)
+            img = np.concatenate((img, submap_elev), axis=-1)
+            mode = 'RGBA'
+            n_channels = 4
 
-        print('Map stats 2: ', np.mean(img[:, :, 0]), np.max(
-            img[:, :, 0]), np.min(img[:, :, 0]))
-        print('Map stats 2: ', np.mean(img[:, :, 1]), np.max(
-            img[:, :, 1]), np.min(img[:, :, 1]))
-        print('Map stats 2: ', np.mean(img[:, :, 2]), np.max(
-            img[:, :, 2]), np.min(img[:, :, 2]))
-        print('Map stats 2: ', np.mean(img[:, :, 3]), np.max(
-            img[:, :, 3]), np.min(img[:, :, 3]))
+        img_tensor = torch.zeros(0, n_channels, self.submap_size_, self.submap_size_)
 
-        img_tensor = torch.zeros(0, 4, self.submap_size_, self.submap_size_)
-        image = Image.fromarray(img.astype('uint8'))
-        image = self.transform(image)
-        img_tensor = torch.cat([img_tensor, image[None, :, :, :]], dim=0)
-        feats_vae = self.vae.encode(img_tensor.cuda())
-        feats_vae = feats_vae[0].cpu().detach().numpy()
-        return feats_vae
+        img = Image.fromarray(img, mode=mode)
+        img = self.transform(img).unsqueeze(0)
+        img_tensor = torch.cat([img_tensor, img], dim=0)
+
+        with torch.no_grad():
+            feats_vae, logvar_vae = self.experiment.model.encode(img_tensor.cuda())
+            feats_vae = feats_vae.cpu().detach().numpy()
+            logvar_vae = logvar_vae.cpu().detach().numpy()
+
+        elev_img_tensor = torch.zeros(0, 1, self.submap_size_, self.submap_size_)
+        elev_img = Image.fromarray(submap_elev[:, :, 0], mode='L')
+        elev_img = self.transform(elev_img).unsqueeze(0)
+        elev_img_tensor = torch.cat([elev_img_tensor, elev_img], dim=0)
+
+        with torch.no_grad():
+            feats_vae_elev, logvar_vae_elev = self.elev_experiment.model.encode(elev_img_tensor.cuda())
+            feats_vae_elev = feats_vae_elev.cpu().detach().numpy()
+            logvar_vae_elev = logvar_vae_elev.cpu().detach().numpy()
+
+        feats_vae = np.concatenate((feats_vae, feats_vae_elev), axis=-1)
+        logvar_vae = np.concatenate((logvar_vae, logvar_vae_elev), axis=-1)
+
+        return feats_vae, logvar_vae
 
     def get_elev_features(self, submap):
 
@@ -377,7 +696,6 @@ class GroundAnalyzer():
             return np.nan
 
         if (np.sum(np.isnan(submap)) > 0) and (np.sum(np.isnan(submap)) < self.max_unkown_):
-            # print('INPAINT!!!', submap)
             cv.inpaint(submap, (np.isnan(submap)).astype(
                 np.uint8), 3, cv.INPAINT_NS, dst=submap)
 
@@ -398,70 +716,32 @@ class GroundAnalyzer():
         if np.sum(np.isnan(feature)) > 0:
             print('Feature is nan')
             return
-        if self.elev_features_.shape[0] == 0:
-            print('First feature added')
-            self.elev_features_ = np.append(self.elev_features_, feature)
-            return
-        print('shapes: ', self.elev_features_.shape, feature.shape)
-        for feat in self.elev_features_:
-            if np.linalg.norm(feat - feature) < self.elev_min_dist_:
-                return
-            else:
-                print(self.elev_features_.shape, feature.shape)
-                self.elev_features_ = np.append(
-                    self.elev_features_, np.expand_dims(feature, axis=0), axis=0)
-                # print('Elev Feature added', self.elev_features_)
-                return
+        feature = np.expand_dims(feature, axis=0)
+        self.elev_birch_model.partial_fit(feature)
 
-    def add_feature_img(self, feature):
+    def add_feature_img(self, feature, var=None):
         if np.isnan(feature).any():
+            print('Feature is nan', feature)
             return
-        if self.features_.shape[0] == 0:
-            print('First feature added', self.features_.shape, feature.shape)
-            self.features_ = np.append(self.features_, feature, axis=0)
-            return
-        for feat in self.features_:
-            if np.linalg.norm(feat - feature) < self.img_min_dist_:
-                return
-            else:
-                self.features_ = np.append(self.features_, feature, axis=0)
-                # print('Feature added', self.features_)
-                np.save(self.features_filename_, self.features_)
-                return
-
-    def is_feature_img_nav(self, feature, features, threshold):
-        min_dist = np.inf
-        for feat in features:
-            dist = np.linalg.norm(feat - feature)
-            if dist < min_dist:
-                min_dist = dist
-        if min_dist == np.inf:
-            min_dist = 999
-        return 255 - np.clip(min_dist * (255/threshold), 0, 255)
-
-    def is_feature_elev_nav(self, feature, features, threshold):
-        min_dist = np.inf
-        for feat in features:
-            dist = np.linalg.norm(feat - feature)
-            if dist < min_dist:
-                min_dist = dist
-        if min_dist == np.inf:
-            min_dist = 999
-        if min_dist < threshold:
-            return 255
+        if self.use_birch:
+            self.birch_model.partial_fit(feature)
         else:
-            return 0
-
-    def map_layer_to_numpy(self, msg, layer_name):
-        layer_index = msg.layers.index(layer_name)
-        self.size_x_ = int(msg.info.length_x)
-        self.size_y_ = int(msg.info.length_x)
-        return np.array(msg.data[layer_index].data).reshape(msg.data[layer_index].layout.dim[0].size, msg.data[layer_index].layout.dim[1].size)
-
-    def map_rgb_layer_to_numpy(self, msg, layer_name):
-        layer_index = msg.layers.index(layer_name)
-        self.size_x_ = int(msg.info.length_x)
-        self.size_y_ = int(msg.info.length_x)
-        data = np.array([ctypes.c_uint32.from_buffer(
-            ctypes.c_float(val)).value for val in msg.data[layer_index].data])
-        return np.array(data).reshape(msg.data[layer_index].layout.dim[0].size, msg.data[layer_index].layout.dim[1].size)
+            if self.features_ is None:
+                self.features_ = feature
+                if var is not None:
+                    self.var_ = None
+            else:
+                self.var_ = None
+                var = None
+                # Efficiently compute distances to all existing features
+                # Calculate Mahalanobis distance if variance is available
+                if self.var_ is not None:
+                    diff = self.features_ - feature
+                    var_safe = np.maximum(self.var_, 1e-10)
+                    dists = np.sqrt(np.sum((diff ** 2) / var_safe, axis=1))
+                else:
+                    dists = np.linalg.norm(self.features_ - feature, axis=1)
+                if np.all(dists > self.img_min_dist_):
+                    self.features_ = np.vstack([self.features_, feature])
+                    if var is not None:
+                        self.var_ = np.vstack([self.var_, var])

@@ -16,9 +16,9 @@
 
 #include "local_navigation/GridmapUpdaterNode.hpp"
 
-#include "tf2/LinearMath/Transform.h"
-#include "tf2/transform_datatypes.h"
-#include "tf2_ros/transform_listener.h"
+#include "tf2/LinearMath/Transform.hpp"
+#include "tf2/transform_datatypes.hpp"
+#include "tf2_ros/transform_listener.hpp"
 #include "pcl/filters/voxel_grid.h"
 #include "pcl/common/common.h"
 #include "pcl_conversions/pcl_conversions.h"
@@ -62,8 +62,8 @@ GridmapUpdaterNode::GridmapUpdaterNode(const rclcpp::NodeOptions & options)
   subscription_img_ = create_subscription<sensor_msgs::msg::Image>(
       camera_topic_, 1,
       std::bind(&GridmapUpdaterNode::image_callback, this, _1));
-  gridmap_pub_ = create_publisher<grid_map_msgs::msg::GridMap>("grid_map", 10);
-  subgridmap_pub_ = create_publisher<grid_map_msgs::msg::GridMap>("subgrid_map", 10);
+  gridmap_pub_ = create_publisher<grid_map_msgs::msg::GridMap>(gridmap_topic_, 10);
+  subgridmap_pub_ = create_publisher<grid_map_msgs::msg::GridMap>(subgridmap_topic_, 10);
   img_pub_ = create_publisher<sensor_msgs::msg::Image>("img_proy_debug", 10);
 }
 
@@ -75,6 +75,8 @@ GridmapUpdaterNode::get_params()
   this->declare_parameter("lidar_topic", "/lidar_points");
   this->declare_parameter("path_topic", "/path");
   this->declare_parameter("pose_topic", "/current_pose");
+  this->declare_parameter("gridmap_topic", "/grid_map");
+  this->declare_parameter("subgridmap_topic", "/subgrid_map");
   this->declare_parameter("map_frame", "map");
   this->declare_parameter("robot_frame", "base_link");
   this->declare_parameter("camera_frame", "camera_color_optical_frame");
@@ -84,6 +86,8 @@ GridmapUpdaterNode::get_params()
   lidar_topic_ = this->get_parameter("lidar_topic").as_string();
   path_topic_ = this->get_parameter("path_topic").as_string();
   pose_topic_ = this->get_parameter("pose_topic").as_string();
+  gridmap_topic_ = this->get_parameter("gridmap_topic").as_string();
+  subgridmap_topic_ = this->get_parameter("subgridmap_topic").as_string();
   map_frame_id_ = this->get_parameter("map_frame").as_string();
   robot_frame_id_ = this->get_parameter("robot_frame").as_string();
   camera_frame_id_ = this->get_parameter("camera_frame").as_string();
@@ -111,7 +115,7 @@ void
 GridmapUpdaterNode::init_colors()
 {
   Eigen::Vector3i color_unknown_v(200, 200, 200);
-  Eigen::Vector3i color_free_v(0, 255, 0);
+  Eigen::Vector3i color_free_v(0, 0, 0);
   Eigen::Vector3i color_obstacle_v(255, 0, 0);
 
   grid_map::colorVectorToValue(color_unknown_v, color_unknown_);
@@ -132,7 +136,7 @@ GridmapUpdaterNode::reset_gridmap()
       for (auto j = 0; j < gridmap_->getSize()(1); j++) {
         em_(i, j) = NAN;
         tm_(i, j) = color_unknown_;
-        cm_(i, j) = 0;
+        cm_(i, j) = color_free_;
       }
   }
 
@@ -150,7 +154,7 @@ GridmapUpdaterNode::reset_gridmap()
 std::tuple<float, int, int>
 get_point_color(
   const pcl::PointXYZ & point, const image_geometry::PinholeCameraModel & camera_model,
-  const cv::Mat & image_rgb_raw)
+  const cv::Mat & image_rgb_raw, bool bgr_mode = false)
 {
   cv::Mat world_point_fromCamera = (cv::Mat_<double>(3, 1) << point.x, point.y, point.z);
   cv::Point2d point_2d = camera_model.project3dToPixel(cv::Point3d(point.x, point.y, point.z));
@@ -162,7 +166,12 @@ get_point_color(
     if (image_rgb_raw.type() == CV_8UC3) {
       cv::Vec3b color = image_rgb_raw.at<cv::Vec3b>(static_cast<int>(point_y),
         static_cast<int>(point_x));
-      Eigen::Vector3i color_eigen(color[0], color[1], color[2]);
+      Eigen::Vector3i color_eigen;
+      if (bgr_mode) {
+        color_eigen = Eigen::Vector3i(color[2], color[1], color[0]);
+      } else {
+        color_eigen = Eigen::Vector3i(color[0], color[1], color[2]);
+      }
       float color_value;
       grid_map::colorVectorToValue(color_eigen, color_value);
       return {color_value, point_x, point_y};
@@ -217,6 +226,8 @@ GridmapUpdaterNode::update_gridmap(
     if (std::isinf(point_camera.y)) {continue;}
     if (std::isinf(point_camera.z)) {continue;}
 
+    if (point_robot.x > 0 && only_positive_x_) {continue;}
+
     if (point_robot.x < robot_radious_max_x_ && point_robot.x > robot_radious_min_x_ &&
       abs(point_robot.y) < robot_radious_y_)
     {
@@ -246,7 +257,8 @@ GridmapUpdaterNode::update_gridmap(
     if (camera_model_ != nullptr && !image_rgb_raw_.empty() &&
       point_camera.z > 0)  // Prevent to proyect points behind the camera
     {
-      auto [color, p_x, p_y] = get_point_color(point_camera, *camera_model_, image_rgb_raw_);
+      auto [color, p_x, p_y] = get_point_color(point_camera, *camera_model_, image_rgb_raw_,
+          bgr_mode_);
       if (color > 0) {
         cm_(idx(0), idx(1)) = color;
         gridmap_->at("RGB", idx) = color;
@@ -297,6 +309,8 @@ transform_cloud(
 void
 GridmapUpdaterNode::pose_callback(geometry_msgs::msg::PoseStamped::UniquePtr pose)
 {
+  RCLCPP_INFO(get_logger(), "Pose received!");
+
   grid_map::GridMap submap;
 
   grid_map::Position position(pose->pose.position.x + subgridmap_size_ / 2 * resolution_gridmap_,
@@ -307,13 +321,12 @@ GridmapUpdaterNode::pose_callback(geometry_msgs::msg::PoseStamped::UniquePtr pos
 
   submap.setFrameId(robot_frame_id_);
   submap.setGeometry(grid_map::Length(subgridmap_size_ * resolution_gridmap_,
-    subgridmap_size_ * resolution_gridmap_), resolution_gridmap_);
+      subgridmap_size_ * resolution_gridmap_), resolution_gridmap_);
   submap.add("elevation");
   submap.add("RGB");
 
   grid_map::Matrix & data_rgb = submap["RGB"];
   grid_map::Matrix & data_elevation = submap["elevation"];
-
 
   grid_map::GridMapIterator iterator(submap);
   for (grid_map::SubmapIterator submap_iterator(*gridmap_, submapStartIndex, submapBufferSize);
@@ -412,6 +425,9 @@ GridmapUpdaterNode::image_callback(sensor_msgs::msg::Image::UniquePtr msg)
       image_rgb_ptr = cv_bridge::toCvCopy(*msg, sensor_msgs::image_encodings::RGB8);
     } else if (msg->encoding == sensor_msgs::image_encodings::MONO8) {
       image_rgb_ptr = cv_bridge::toCvCopy(*msg, sensor_msgs::image_encodings::MONO8);
+    } else if (msg->encoding == sensor_msgs::image_encodings::BGR8) {
+      image_rgb_ptr = cv_bridge::toCvCopy(*msg, sensor_msgs::image_encodings::BGR8);
+      bgr_mode_ = true;
     } else if (msg->encoding == sensor_msgs::image_encodings::BGRA8) {
       image_rgb_ptr = cv_bridge::toCvCopy(*msg, sensor_msgs::image_encodings::BGRA8);
     } else {

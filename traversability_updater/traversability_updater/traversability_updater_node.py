@@ -1,11 +1,11 @@
 """
 This module contains the implementation of the GridMapSubscriber node.
 
-It subscribes to grid map messages, analyzes the traversability of the terrain, 
+It subscribes to grid map messages, analyzes the traversability of the terrain,
 and republishes the modified grid map with traversability information.
 
 Classes:
-    GridMapSubscriber: A ROS2 node that subscribes to grid map messages, 
+    GridMapSubscriber: A ROS2 node that subscribes to grid map messages,
     processes them to analyze traversability,
                        and republishes the modified grid map.
 
@@ -28,14 +28,37 @@ Functions:
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import ctypes
+
 from grid_map_msgs.msg import GridMap as GridMapMsg
 
-from ground_analyzer import GroundAnalyzer
+from traversability_updater.ground_analyzer import GroundAnalyzer
 
 import numpy as np
 
 import rclpy
 from rclpy.node import Node
+
+
+def get_rgb_image(submap):
+    # Get 3 dims RGB image from submap
+    return np.stack(((submap & 255), ((submap >> 8) & 255),
+                     (submap >> 16) & 255), axis=-1).astype(np.uint8)
+
+
+def map_layer_to_numpy(msg, layer_name):
+    layer_index = msg.layers.index(layer_name)
+    return np.array(msg.data[layer_index].data).reshape(
+        msg.data[layer_index].layout.dim[0].size,
+        msg.data[layer_index].layout.dim[1].size)
+
+
+def map_rgb_layer_to_numpy(msg, layer_name):
+    layer_index = msg.layers.index(layer_name)
+    data = np.array([ctypes.c_uint32.from_buffer(
+        ctypes.c_float(val)).value for val in msg.data[layer_index].data])
+    return np.array(data).reshape(msg.data[layer_index].layout.dim[0].size,
+                                  msg.data[layer_index].layout.dim[1].size)
 
 
 class GridMapSubscriber(Node):
@@ -55,14 +78,32 @@ class GridMapSubscriber(Node):
         """
         super().__init__('nav_analyzer_node')
 
+        self.declare_parameter('grid_map_topic', '/grid_map')
+        grid_map_topic = self.get_parameter('grid_map_topic') \
+            .get_parameter_value().string_value
+
+        self.declare_parameter('subgrid_map_topic', '/subgrid_map')
+        subgrid_map_topic = self.get_parameter(
+            'subgrid_map_topic'
+        ).get_parameter_value().string_value
+
+        self.declare_parameter('save_folder_name', '/home/migueldm/bagfiles/')
+        save_folder_name = self.get_parameter(
+            'save_folder_name'
+        ).get_parameter_value().string_value
+
         # Set to True to enable learning during Teleoperation
         self.learning = True
 
         # Set mode:
         # 'HC' for Hand Crafted Features
         # 'VAE' for VAE features
-        self.mode = 'HC'
-        # self.mode = 'VAE'
+        # self.mode = 'HC'
+        self.mode = 'VAE'
+
+        self.save_maps = False
+        self.data_folder = save_folder_name
+        self.num = 0
 
         self.analyzer_ = GroundAnalyzer(img_mode=self.mode)
 
@@ -72,14 +113,14 @@ class GridMapSubscriber(Node):
 
         self.grid_map_sub = self.create_subscription(
             GridMapMsg,
-            '/grid_map',
+            grid_map_topic,
             self.grid_map_callback,
             1
         )
 
         self.subgrid_map_sub = self.create_subscription(
             GridMapMsg,
-            '/subgrid_map',
+            subgrid_map_topic,
             self.subgrid_map_callback,
             1
         )
@@ -95,27 +136,12 @@ class GridMapSubscriber(Node):
             layer_name (str): The name of the layer to update.
             data (Any): The data to set for the specified layer.
         Returns:
-            MessageType: The updated message object with the new data for the 
+            MessageType: The updated message object with the new data for the
             specified layer.
         """
         layer_index = msg.layers.index(layer_name)
         msg.data[layer_index].data = data
         return msg
-
-    def combine_transversality(self, mask_1, mask_2, alpha=0.5):
-        """
-        Combine two transversality masks using a weighted average.
-
-        Args:
-            mask_1 (numpy.ndarray): The first transversality mask.
-            mask_2 (numpy.ndarray): The second transversality mask.
-            alpha (float, optional): The weight for the first mask.
-        Returns:
-            numpy.ndarray: The combined transversality mask.
-        """
-        nav_map_fusion = (mask_1 * alpha + mask_2 * (1 - alpha))
-
-        return nav_map_fusion
 
     def subgrid_map_callback(self, msg):
         """
@@ -135,13 +161,23 @@ class GridMapSubscriber(Node):
         Note:
             This function only processes messages if learning is enabled.
         """
-        if self.learning:
-            if self.mode == 'VAE':
-                self.analyzer_.insert_sample_vae(msg)
 
-            elif self.mode == 'HC':
-                self.analyzer_.insert_sample_img(msg)
-                self.analyzer_.insert_sample_elev(msg)
+        self.get_logger().info('Insert sample')
+
+        img_map = map_rgb_layer_to_numpy(msg, 'RGB')
+        map_elev = map_layer_to_numpy(msg, 'elevation')
+        map_elev = np.expand_dims(map_elev, axis=-1)  # Add a third dimension
+
+        img_map = get_rgb_image(img_map)
+
+        if self.save_maps and (np.sum(img_map == 0) == 0):
+            np.save(f'{self.data_folder}img_map_{self.num:04d}.npy', img_map)
+            np.save(f'{self.data_folder}elev_map_{self.num:04d}.npy', map_elev)
+            self.num += 1
+            return
+
+        if self.learning:
+            self.analyzer_.insert_sample(img_map, map_elev)
 
     def grid_map_callback(self, msg):
         """
@@ -162,23 +198,28 @@ class GridMapSubscriber(Node):
         The updated transversality data is set in the 'transversality'
         layer of the grid map and published.
         """
-        if self.mode == 'VAE':
-            computed_map = self.analyzer_.recompute_transversality_vae(
-                msg, threshold=5.0)
-            self.set_layer_data(msg, 'transversality',
-                                np.array(computed_map).flatten().tolist())
-            self.pub.publish(msg)
 
-        elif self.mode == 'HC':
-            map_img = self.analyzer_.recompute_transversality_img(
-                msg, threshold=1.5)
-            map_elev = self.analyzer_.recompute_transversality_elev(
-                msg, threshold=0.1)
-            computed_map = self.combine_transversality(map_img, map_elev,
-                                                       alpha=0.8)
-            self.set_layer_data(msg, 'transversality',
-                                np.array(computed_map).flatten().tolist())
-            self.pub.publish(msg)
+        img_map = map_rgb_layer_to_numpy(msg, 'RGB')
+        map_rgb = (get_rgb_image(img_map))
+
+        layer_name = 'elevation'
+        map_elev = map_layer_to_numpy(msg, layer_name)
+
+
+        if self.save_maps:
+            np.save(self.data_folder + 'full_map.npy', map_rgb)
+            np.save(self.data_folder + 'full_map_elev.npy', map_elev)
+            return
+
+        self.get_logger().info('Recompute...')
+        computed_map = self.analyzer_.recompute_transversality(
+            map_rgb, map_elev, threshold=0.75, alpha=0.8)
+        self.get_logger().info('             ...Done!')
+
+        self.set_layer_data(msg, 'transversality',
+                            np.array(computed_map).flatten().tolist())
+
+        self.pub.publish(msg)
 
 
 def main(args=None):
