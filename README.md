@@ -97,6 +97,14 @@ If you use this code in your research, please cite the corresponding paper:
 ```
     
 
+## License
+
+This project is licensed under the [Apache License 2.0](LICENSE).
+
+The code under `traversability_updater/traversability_updater/third_party/PyTorch_VAE` comes from [PyTorch-VAE](https://github.com/AntixK/PyTorch-VAE) and is also licensed under Apache 2.0; its original license files are preserved.
+
+The pretrained weights in `traversability_updater/checkpoints` and `traversability_updater/traversability_updater/VAEmodel_h_16_128.pkl` were trained on the [Describable Textures Dataset (DTD)](https://www.robots.ox.ac.uk/~vgg/data/dtd/). They are released under Apache 2.0, but their use is also subject to the terms of that dataset, which is made available for research purposes.
+
 ## Authors
 
 - [Miguel Ángel de Miguel](github.com/midemig)
